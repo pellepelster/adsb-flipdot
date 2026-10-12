@@ -1,0 +1,145 @@
+{
+    "$schema": "https://schemas.kicad.org/drc.v1.json",
+    "coordinate_units": "mm",
+    "date": "2026-10-10T11:33:57+0000",
+    "included_severities": [
+        "error",
+        "warning",
+        "exclusion"
+    ],
+    "kicad_version": "9.0.9",
+    "schematic_parity": [],
+    "source": "flipdot-hat.kicad_pcb",
+    "unconnected_items": [],
+    "violations": [
+        {
+            "description": "Track has unconnected end",
+            "items": [
+                {
+                    "description": "Track [PI_ROW-LOW] on F.Cu, length 1.2717 mm",
+                    "pos": {
+                        "x": 47.1568,
+                        "y": 29.4417
+                    },
+                    "uuid": "d9c9b2ac-c74f-4704-a82f-b3395e4bf753"
+                }
+            ],
+            "severity": "warning",
+            "type": "track_dangling"
+        },
+        {
+            "description": "Track has unconnected end",
+            "items": [
+                {
+                    "description": "Track [PI_ROW-LOW] on B.Cu, length 1.2717 mm",
+                    "pos": {
+                        "x": 47.1568,
+                        "y": 29.4417
+                    },
+                    "uuid": "ea841bc5-d397-46c9-ad9b-9400f02f3775"
+                }
+            ],
+            "severity": "warning",
+            "type": "track_dangling"
+        },
+        {
+            "description": "Silkscreen clipped by board edge",
+            "items": [
+                {
+                    "description": "Segment on Edge.Cuts",
+                    "pos": {
+                        "x": 0.0,
+                        "y": 53.5
+                    },
+                    "uuid": "427b03ee-f852-4a1e-a2da-54fd6a8c1058"
+                },
+                {
+                    "description": "Segment of J3 on F.Silkscreen",
+                    "pos": {
+                        "x": -0.05,
+                        "y": 9.4
+                    },
+                    "uuid": "6566f38d-7e04-4b42-a0f2-df981df634f9"
+                }
+            ],
+            "severity": "warning",
+            "type": "silk_edge_clearance"
+        },
+        {
+            "description": "Silkscreen clipped by board edge",
+            "items": [
+                {
+                    "description": "Segment on Edge.Cuts",
+                    "pos": {
+                        "x": 0.0,
+                        "y": 53.5
+                    },
+                    "uuid": "427b03ee-f852-4a1e-a2da-54fd6a8c1058"
+                },
+                {
+                    "description": "Segment of J3 on F.Silkscreen",
+                    "pos": {
+                        "x": -0.05,
+                        "y": 18.6
+                    },
+                    "uuid": "51fbd886-9642-4539-ac0b-664774f33188"
+                }
+            ],
+            "severity": "warning",
+            "type": "silk_edge_clearance"
+        },
+        {
+            "description": "Silkscreen clipped by board edge",
+            "items": [
+                {
+                    "description": "Segment on Edge.Cuts",
+                    "pos": {
+                        "x": 0.0,
+                        "y": 53.5
+                    },
+                    "uuid": "427b03ee-f852-4a1e-a2da-54fd6a8c1058"
+                },
+                {
+                    "description": "Segment of J3 on F.Silkscreen",
+                    "pos": {
+                        "x": 8.75,
+                        "y": 18.6
+                    },
+                    "uuid": "8548cd5d-a316-4176-a03b-f7067a079b49"
+                }
+            ],
+            "severity": "warning",
+            "type": "silk_edge_clearance"
+        },
+        {
+            "description": "Silkscreen clipped by solder mask",
+            "items": [
+                {
+                    "description": "Reference field of U3",
+                    "pos": {
+                        "x": 53.0,
+                        "y": 10.67
+                    },
+                    "uuid": "2505e8e5-8041-4e8f-9e61-bbdb2cedcd6c"
+                }
+            ],
+            "severity": "warning",
+            "type": "silk_over_copper"
+        },
+        {
+            "description": "Silkscreen clipped by solder mask",
+            "items": [
+                {
+                    "description": "Reference field of U2",
+                    "pos": {
+                        "x": 39.0,
+                        "y": 10.67
+                    },
+                    "uuid": "b24bce07-0f55-40d1-9672-6cf58f86b0e7"
+                }
+            ],
+            "severity": "warning",
+            "type": "silk_over_copper"
+        }
+    ]
+}
