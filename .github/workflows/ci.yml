@@ -22,7 +22,7 @@ env:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -38,7 +38,7 @@ jobs:
 
   build:
     name: Build (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -62,7 +62,7 @@ jobs:
           tool: cross
       - name: Build
         run: ${{ matrix.cargo }} build --release --locked --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: adsb-flipdot-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/adsb-flipdot
