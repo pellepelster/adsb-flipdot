@@ -30,10 +30,6 @@ run = "cargo run --release --"
 description = "Run tests"
 run = "cargo nextest run"
 
-[tasks.watch]
-description = "Rebuild and run tests on change"
-run = "cargo watch -x check -x 'nextest run'"
-
 [tasks.fmt]
 description = "Format sources"
 run = "cargo fmt --all"
@@ -46,39 +42,11 @@ run = "cargo clippy --all-targets --all-features -- -D warnings"
 description = "Format check + clippy + tests"
 depends = ["fmt-check", "lint", "test"]
 
-[tasks.fmt-check]
+[tasks."fmt:check"]
 description = "Verify formatting"
 run = "cargo fmt --all -- --check"
 
-[tasks.dump]
-description = "Print all received ADS-B frames (adsb-flipdot debug dump)"
-run = "cargo run --release -- debug dump"
-
-[tasks.live]
-description = "Live aircraft table (adsb-flipdot debug live)"
-run = "cargo run --release -- debug live"
-
-[tasks.start]
-description = "Show passing aircraft on the simulated flipdot display (adsb-flipdot run)"
-run = "cargo run --release -- run"
-
-[tasks.record]
-description = "Record all frames to a JSON lines file, e.g. `mise run record flight.jsonl`"
-run = "cargo run --release -- debug record"
-
-[tasks.template-codes]
-description = "List all codes usable in `adsb-flipdot run --template`"
-run = "cargo run --release -q -- template-codes"
-
-[tasks.filter]
-description = "Aircraft passing a point within a radius (adsb-flipdot debug filter)"
-run = "cargo run --release -- debug filter"
-
-[tasks.flipdot]
-description = "Preview text on the simulated flipdot panel, e.g. `mise run flipdot SAS51B FL390`"
-run = "cargo run --release -q -- debug flipdot"
-
-[tasks.build-pi]
+[tasks."build:pi"]
 description = "Cross-compile a static release binary for 64-bit Raspberry Pi (needs Docker)"
 run = [
   "cross build --release --target aarch64-unknown-linux-musl",

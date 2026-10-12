@@ -46,7 +46,6 @@ jobs:
           - name: x86_64
             target: x86_64-unknown-linux-gnu
             cargo: cargo
-          # Same static binary as `mise run build-pi`.
           - name: raspberry-pi
             target: aarch64-unknown-linux-musl
             cargo: cross
