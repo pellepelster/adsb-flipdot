@@ -1,15 +1,19 @@
-//! Shared frame source: RTL-SDR dongle or IQ file -> demodulated Mode S frames.
+//! Shared frame source: demodulated Mode S frames from the RTL-SDR dongle,
+//! an IQ file, or a recording made with `debug record`.
 //!
-//! Pipeline: rs-rtl (pure Rust USB driver) -> desperado (IQ source) ->
-//! rs1090 demodulator at 2.4 MS/s.
+//! Live pipeline: rs-rtl (pure Rust USB driver) -> desperado (IQ source) ->
+//! rs1090 demodulator at 2.4 MS/s. A recording skips all of that and replays
+//! the frames with their original timing, so every command can be used
+//! without the dongle.
 
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use desperado::{IqAsyncSource, IqFormat};
-use rs1090::decode::TimedMessage;
+use rs1090::decode::{SensorMetadata, TimedMessage};
 use rs1090::source::iqread;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -50,6 +54,29 @@ pub struct SourceArgs {
     /// Sample format of the IQ file given with --file.
     #[arg(long, value_enum, default_value_t = IqFileFormat::Cu8)]
     pub iq_format: IqFileFormat,
+
+    /// Replay frames recorded with `debug record` instead of opening the
+    /// dongle. Frames arrive with the timing they were recorded with.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["device", "file"])]
+    pub device_record_file: Option<PathBuf>,
+
+    /// Replay the recording this many times faster than it was recorded.
+    #[arg(long, value_name = "FACTOR", default_value_t = 1.0,
+          value_parser = parse_speed, requires = "device_record_file")]
+    pub device_record_speed: f64,
+
+    /// Start the recording over when it ends, instead of stopping.
+    #[arg(long, requires = "device_record_file")]
+    pub device_record_loop: bool,
+}
+
+fn parse_speed(s: &str) -> Result<f64, String> {
+    let value: f64 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err("must be greater than 0".to_string())
+    }
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -85,11 +112,47 @@ pub struct FrameStream {
 impl FrameStream {
     /// Open the source and start demodulating on a background task.
     pub async fn open(args: &SourceArgs) -> Result<Self> {
-        let live = args.file.is_none();
-        let mut source = open_source(args).await?;
-
         let (tx, rx) = mpsc::channel::<TimedMessage>(1024);
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+        if let Some(path) = &args.device_record_file {
+            let frames = read_recording(path)?;
+            let description = format!(
+                "replaying {} ({} frames, {:.0} s{}{})",
+                path.display(),
+                frames.len(),
+                recording_span(&frames),
+                if args.device_record_speed == 1.0 {
+                    String::new()
+                } else {
+                    format!(", {}x speed", args.device_record_speed)
+                },
+                if args.device_record_loop {
+                    ", looping"
+                } else {
+                    ""
+                },
+            );
+            let (speed, looping) = (args.device_record_speed, args.device_record_loop);
+            let handle = tokio::spawn(async move {
+                tokio::select! {
+                    _ = replay(tx, frames, speed, looping) => {}
+                    _ = shutdown_rx.changed() => {}
+                }
+                Ok(())
+            });
+            return Ok(Self {
+                rx,
+                shutdown_tx,
+                handle,
+                live: false,
+                description,
+                last: None,
+            });
+        }
+
+        let live = args.file.is_none();
+        let mut source = open_source(args).await?;
 
         // `receiver` borrows `source` only while it runs, so after the select
         // the SDR can still be stopped.
@@ -187,6 +250,117 @@ async fn open_source(args: &SourceArgs) -> Result<IqAsyncSource> {
     }
 }
 
+/// One frame of a recording.
+#[derive(Debug, Clone, PartialEq)]
+struct Recorded {
+    /// Receive time in seconds, as recorded.
+    timestamp: f64,
+    frame: Vec<u8>,
+    rssi: Option<f32>,
+}
+
+/// Parse one line written by `debug record`. Only the raw frame, its time
+/// and signal level are used; the decoded fields in the line are for people
+/// and other tools, and are decoded again from the frame on replay.
+fn parse_recorded(line: &str) -> Result<Recorded> {
+    let json: serde_json::Value = serde_json::from_str(line).context("not valid JSON")?;
+    let timestamp = json
+        .get("timestamp")
+        .and_then(serde_json::Value::as_f64)
+        .context("no numeric `timestamp`")?;
+    let hex = json
+        .get("frame")
+        .and_then(serde_json::Value::as_str)
+        .context("no `frame`")?;
+    let frame = hex::decode(hex).context("`frame` is not hex")?;
+    if frame.len() != SHORT_FRAME_BYTES && frame.len() != LONG_FRAME_BYTES {
+        bail!("`frame` is {} bytes, expected 7 or 14", frame.len());
+    }
+    let rssi = json
+        .pointer("/metadata/0/rssi")
+        .and_then(serde_json::Value::as_f64)
+        .map(|v| v as f32);
+    Ok(Recorded {
+        timestamp,
+        frame,
+        rssi,
+    })
+}
+
+/// Read a whole recording. The file is checked completely before anything
+/// is replayed, so a broken line is reported at start and not hours in.
+fn read_recording(path: &Path) -> Result<Vec<Recorded>> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("cannot open recording {}", path.display()))?;
+    let mut frames = Vec::new();
+    for (number, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("cannot read {}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        frames.push(
+            parse_recorded(&line)
+                .with_context(|| format!("{} line {}", path.display(), number + 1))?,
+        );
+    }
+    if frames.is_empty() {
+        bail!("recording {} contains no frames", path.display());
+    }
+    Ok(frames)
+}
+
+/// Seconds between the first and the last frame.
+fn recording_span(frames: &[Recorded]) -> f64 {
+    match (frames.first(), frames.last()) {
+        (Some(first), Some(last)) => (last.timestamp - first.timestamp).max(0.0),
+        _ => 0.0,
+    }
+}
+
+/// Send `frames` with their recorded spacing, `speed` times faster.
+///
+/// Timestamps are passed on as recorded, so position decoding sees the same
+/// time differences as it did live. When looping, each round is shifted
+/// past the previous one to keep time moving forward.
+async fn replay(tx: mpsc::Sender<TimedMessage>, frames: Vec<Recorded>, speed: f64, looping: bool) {
+    let Some(first) = frames.first().map(|f| f.timestamp) else {
+        return;
+    };
+    // One second of silence between two rounds.
+    let round = recording_span(&frames) + 1.0;
+    let mut shift = 0.0;
+    loop {
+        let started = tokio::time::Instant::now();
+        for recorded in &frames {
+            let due = (recorded.timestamp - first).max(0.0) / speed;
+            tokio::time::sleep_until(started + Duration::from_secs_f64(due)).await;
+            let timestamp = recorded.timestamp + shift;
+            let message = TimedMessage {
+                timestamp,
+                frame: recorded.frame.clone(),
+                message: None,
+                metadata: vec![SensorMetadata {
+                    system_timestamp: timestamp,
+                    gnss_timestamp: None,
+                    nanoseconds: None,
+                    rssi: recorded.rssi,
+                    serial: 0,
+                    name: None,
+                }],
+                decode_time: None,
+            };
+            if tx.send(message).await.is_err() {
+                return;
+            }
+        }
+        if !looping {
+            return;
+        }
+        tokio::time::sleep_until(started + Duration::from_secs_f64(round / speed)).await;
+        shift += round;
+    }
+}
+
 /// The demodulator always yields 14 bytes. Short downlink formats (DF < 16)
 /// only carry 7 meaningful bytes; the rest is padding that must be dropped
 /// before decoding.
@@ -220,6 +394,200 @@ pub(crate) mod tests {
             metadata: vec![],
             decode_time: None,
         }
+    }
+
+    /// A source that replays `path`.
+    fn replay_args(path: &Path, extra: &[&str]) -> SourceArgs {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            args: SourceArgs,
+        }
+        let path = path.to_str().unwrap();
+        Wrapper::parse_from(["test", "--device-record-file", path].iter().chain(extra)).args
+    }
+
+    /// A file under the system temp dir, removed when dropped.
+    pub(crate) struct TempFile(pub PathBuf);
+
+    impl TempFile {
+        pub(crate) fn new(name: &str, content: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "adsb-flipdot-test-{name}-{}.jsonl",
+                std::process::id()
+            ));
+            std::fs::write(&path, content).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    const LINE_LONG: &str = r#"{"timestamp":100.5,"frame":"8d4840d6202cc371c32ce0576098","df":"17","icao24":"4840d6","callsign":"KLM1023_","metadata":[{"system_timestamp":100.5,"rssi":-12.5,"serial":0}]}"#;
+    const LINE_SHORT: &str = r#"{"timestamp":100.75,"frame":"5d4ca4ab3b2f5c","df":"11"}"#;
+
+    #[test]
+    fn recorded_line_gives_frame_time_and_signal() {
+        let recorded = parse_recorded(LINE_LONG).unwrap();
+        assert_eq!(recorded.timestamp, 100.5);
+        assert_eq!(recorded.frame, frame("8d4840d6202cc371c32ce0576098"));
+        assert_eq!(recorded.rssi, Some(-12.5));
+
+        let short = parse_recorded(LINE_SHORT).unwrap();
+        assert_eq!(short.frame.len(), 7);
+        assert_eq!(short.rssi, None, "metadata is optional");
+    }
+
+    #[test]
+    fn broken_recorded_lines_are_rejected() {
+        for (line, problem) in [
+            ("not json", "not valid JSON"),
+            (r#"{"frame":"5d4ca4ab3b2f5c"}"#, "no numeric `timestamp`"),
+            (
+                r#"{"timestamp":"1","frame":"5d4ca4ab3b2f5c"}"#,
+                "no numeric `timestamp`",
+            ),
+            (r#"{"timestamp":1.0}"#, "no `frame`"),
+            (r#"{"timestamp":1.0,"frame":"zz"}"#, "`frame` is not hex"),
+            (r#"{"timestamp":1.0,"frame":"5d4c"}"#, "`frame` is 2 bytes"),
+        ] {
+            let error = format!("{:#}", parse_recorded(line).unwrap_err());
+            assert!(error.contains(problem), "{line}: {error}");
+        }
+    }
+
+    #[test]
+    fn recording_file_is_read_and_checked_completely() {
+        let good = TempFile::new("read-good", &format!("{LINE_LONG}\n\n{LINE_SHORT}\n"));
+        let frames = read_recording(&good.0).unwrap();
+        assert_eq!(frames.len(), 2, "blank lines are skipped");
+        assert_eq!(recording_span(&frames), 0.25);
+
+        let bad = TempFile::new("read-bad", &format!("{LINE_LONG}\n{{\"oops\":1}}\n"));
+        let error = format!("{:#}", read_recording(&bad.0).unwrap_err());
+        assert!(error.contains("line 2"), "{error}");
+
+        let empty = TempFile::new("read-empty", "\n");
+        let error = format!("{:#}", read_recording(&empty.0).unwrap_err());
+        assert!(error.contains("contains no frames"), "{error}");
+
+        let missing = std::env::temp_dir().join("adsb-flipdot-test-does-not-exist.jsonl");
+        let error = format!("{:#}", read_recording(&missing).unwrap_err());
+        assert!(error.contains("cannot open recording"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn recording_replays_all_frames_then_ends() {
+        let file = TempFile::new("replay", &format!("{LINE_LONG}\n{LINE_SHORT}\n"));
+        let args = replay_args(&file.0, &["--device-record-speed", "100"]);
+        let mut stream = FrameStream::open(&args).await.unwrap();
+        assert!(
+            stream.description().contains("2 frames"),
+            "{}",
+            stream.description()
+        );
+        assert!(
+            stream.description().contains("100x speed"),
+            "{}",
+            stream.description()
+        );
+
+        let first = stream.recv().await.unwrap();
+        assert_eq!(first.timestamp, 100.5, "recorded time is kept");
+        assert_eq!(first.frame, frame("8d4840d6202cc371c32ce0576098"));
+        assert_eq!(first.metadata[0].rssi, Some(-12.5));
+        let second = stream.recv().await.unwrap();
+        assert_eq!(second.frame, frame("5d4ca4ab3b2f5c"));
+        assert!(
+            stream.recv().await.is_none(),
+            "source ends with the recording"
+        );
+        stream.close().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recording_replays_with_the_recorded_spacing() {
+        let lines: String = [0.0, 2.0, 7.0]
+            .iter()
+            .map(|t| format!(r#"{{"timestamp":{},"frame":"5d4ca4ab3b2f5c"}}"#, 50.0 + t) + "\n")
+            .collect();
+        let file = TempFile::new("spacing", &lines);
+
+        for (speed, expected) in [("1", [0.0, 2.0, 7.0]), ("2", [0.0, 1.0, 3.5])] {
+            let args = replay_args(&file.0, &["--device-record-speed", speed]);
+            let mut stream = FrameStream::open(&args).await.unwrap();
+            let started = tokio::time::Instant::now();
+            for delay in expected {
+                stream.recv().await.unwrap();
+                let elapsed = started.elapsed().as_secs_f64();
+                assert!(
+                    (elapsed - delay).abs() < 0.01,
+                    "speed {speed}: {elapsed} vs {delay}"
+                );
+            }
+            assert!(stream.recv().await.is_none());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn looping_recording_keeps_time_moving_forward() {
+        let lines = format!(
+            "{}\n{}\n",
+            r#"{"timestamp":10.0,"frame":"5d4ca4ab3b2f5c"}"#,
+            r#"{"timestamp":14.0,"frame":"5d4ca4ab3b2f5c"}"#
+        );
+        let file = TempFile::new("loop", &lines);
+        let args = replay_args(&file.0, &["--device-record-loop"]);
+        let mut stream = FrameStream::open(&args).await.unwrap();
+        assert!(stream.description().contains("looping"));
+
+        let started = tokio::time::Instant::now();
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let msg = stream.recv().await.unwrap();
+            seen.push((msg.timestamp, started.elapsed().as_secs_f64().round()));
+        }
+        // 4 s of recording plus 1 s pause: each round is 5 s later, both in
+        // the timestamps and on the clock.
+        assert_eq!(
+            seen,
+            [
+                (10.0, 0.0),
+                (14.0, 4.0),
+                (15.0, 5.0),
+                (19.0, 9.0),
+                (20.0, 10.0)
+            ]
+        );
+        stream.close().await.unwrap();
+    }
+
+    #[test]
+    fn record_file_excludes_device_and_iq_file() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            args: SourceArgs,
+        }
+        let parse = |extra: &[&str]| Wrapper::try_parse_from(["test"].iter().chain(extra));
+        assert!(parse(&["--device-record-file", "a.jsonl"]).is_ok());
+        assert!(parse(&["--device-record-file", "a.jsonl", "--device", "1"]).is_err());
+        assert!(parse(&["--device-record-file", "a.jsonl", "--file", "iq.bin"]).is_err());
+        assert!(
+            parse(&["--device-record-speed", "2"]).is_err(),
+            "needs a recording"
+        );
+        assert!(
+            parse(&["--device-record-loop"]).is_err(),
+            "needs a recording"
+        );
+        assert!(parse(&["--device-record-file", "a", "--device-record-speed", "0"]).is_err());
     }
 
     #[test]

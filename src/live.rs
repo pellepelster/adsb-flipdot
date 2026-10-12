@@ -3,28 +3,14 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
-use futures_util::StreamExt;
+use anyhow::Result;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Cell, Row, Table as TableWidget, TableState};
 use rs1090::decode::cpr::{AircraftState, decode_position};
 use rs1090::decode::{DF, ICAO, Message, TimedMessage};
 use serde_json::Value;
 
-use crate::source::{FrameStream, SourceArgs};
-
-/// How often the screen is checked for redraw.
-const TICK: Duration = Duration::from_millis(200);
-/// Redraw at least this often so the age column keeps counting.
-const IDLE_REDRAW: Duration = Duration::from_secs(1);
-/// A row is highlighted for this long after it received a message.
-const FRESH: Duration = Duration::from_secs(1);
-/// Rows scrolled per PageUp / PageDown.
-const PAGE: usize = 10;
+use crate::source::SourceArgs;
+use crate::tui::{self, Column, View, age_style, opt};
 
 #[derive(clap::Args, Debug)]
 pub struct LiveArgs {
@@ -38,31 +24,33 @@ pub struct LiveArgs {
 
 /// Everything known about one aircraft, merged from all its messages.
 #[derive(Debug, Default, Clone, PartialEq)]
-struct Aircraft {
-    callsign: Option<String>,
-    squawk: Option<String>,
-    altitude_ft: Option<i64>,
-    groundspeed_kt: Option<f64>,
-    track_deg: Option<f64>,
-    vertical_rate_fpm: Option<i64>,
-    latitude: Option<f64>,
-    longitude: Option<f64>,
-    rssi_db: Option<f32>,
-    messages: u64,
-    last_seen: Option<Instant>,
+pub struct Aircraft {
+    pub callsign: Option<String>,
+    pub squawk: Option<String>,
+    pub altitude_ft: Option<i64>,
+    pub groundspeed_kt: Option<f64>,
+    pub track_deg: Option<f64>,
+    pub vertical_rate_fpm: Option<i64>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    /// Receive time, in seconds, of the frame that gave the last position.
+    pub position_time: Option<f64>,
+    pub rssi_db: Option<f32>,
+    pub messages: u64,
+    pub last_seen: Option<Instant>,
 }
 
 /// The aircraft table. Pure state, no I/O, so it can be unit tested.
-struct Table {
-    rows: BTreeMap<u32, Aircraft>,
+pub struct Table {
+    pub rows: BTreeMap<u32, Aircraft>,
     /// rs1090's own per-aircraft state, needed to pair CPR position frames.
     cpr: BTreeMap<ICAO, AircraftState>,
     expire: Duration,
-    frames: u64,
+    pub frames: u64,
 }
 
 impl Table {
-    fn new(expire: Duration) -> Self {
+    pub fn new(expire: Duration) -> Self {
         Self {
             rows: BTreeMap::new(),
             cpr: BTreeMap::new(),
@@ -71,12 +59,11 @@ impl Table {
         }
     }
 
-    /// Merge one frame into the table. Returns true if a row changed.
-    fn update(&mut self, msg: &TimedMessage, now: Instant) -> bool {
+    /// Merge one frame into the table. Returns the address of the aircraft
+    /// whose row changed, if any.
+    pub fn update(&mut self, msg: &TimedMessage, now: Instant) -> Option<u32> {
         self.frames += 1;
-        let Ok(mut decoded) = Message::try_from(msg.frame.as_slice()) else {
-            return false;
-        };
+        let mut decoded = Message::try_from(msg.frame.as_slice()).ok()?;
 
         // Resolve latitude/longitude from pairs of CPR encoded position frames.
         if let DF::ExtendedSquitterADSB(adsb) = &mut decoded.df {
@@ -91,9 +78,7 @@ impl Table {
             );
         }
 
-        let Ok(json) = serde_json::to_value(&decoded) else {
-            return false;
-        };
+        let json = serde_json::to_value(&decoded).ok()?;
         let df = json.get("df").and_then(Value::as_str).unwrap_or("");
 
         // Only all-call replies and extended squitters carry a checksum that
@@ -102,12 +87,11 @@ impl Table {
         // formats may update a known aircraft but never create a row.
         let verified = matches!(df, "11" | "17" | "18");
         let icao = match json.get("icao24").and_then(Value::as_str) {
-            Some(hex) => u32::from_str_radix(hex, 16).ok(),
-            None => Some(decoded.crc),
+            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+            None => decoded.crc,
         };
-        let Some(icao) = icao else { return false };
         if !verified && !self.rows.contains_key(&icao) {
-            return false;
+            return None;
         }
 
         let row = self.rows.entry(icao).or_default();
@@ -140,13 +124,14 @@ impl Table {
         ) {
             row.latitude = Some(lat);
             row.longitude = Some(lon);
+            row.position_time = Some(msg.timestamp);
         }
-        true
+        Some(icao)
     }
 
     /// Drop aircraft not heard from within the expiry time. Returns true if
     /// any row was removed.
-    fn expire(&mut self, now: Instant) -> bool {
+    pub fn expire(&mut self, now: Instant) -> bool {
         let before = self.rows.len();
         let expire = self.expire;
         self.rows.retain(|_, a| {
@@ -159,12 +144,7 @@ impl Table {
     }
 }
 
-fn opt<T>(value: Option<T>, f: impl FnOnce(T) -> String) -> String {
-    value.map(f).unwrap_or_default()
-}
-
-/// Column titles, widths and whether the column is right aligned.
-const COLUMNS: [(&str, u16, bool); 12] = [
+const COLUMNS: [Column; 12] = [
     ("ICAO", 6, false),
     ("CALLSIGN", 8, false),
     ("SQUAWK", 6, true),
@@ -179,220 +159,88 @@ const COLUMNS: [(&str, u16, bool); 12] = [
     ("AGE", 4, true),
 ];
 
-fn cell(text: String, column: usize) -> Cell<'static> {
-    let line = Line::from(text);
-    Cell::from(if COLUMNS[column].2 {
-        line.right_aligned()
-    } else {
-        line
-    })
-}
+impl View for Table {
+    fn update(&mut self, msg: &TimedMessage, now: Instant) -> bool {
+        Table::update(self, msg, now).is_some()
+    }
 
-/// Draw header, aircraft table and footer into `frame`.
-fn draw(frame: &mut Frame, table: &Table, scroll: &mut usize, status: &str, now: Instant) {
-    let [header_area, table_area, footer_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(3),
-        Constraint::Length(1),
-    ])
-    .areas(frame.area());
+    fn expire(&mut self, now: Instant) -> bool {
+        Table::expire(self, now)
+    }
 
-    frame.render_widget(
-        Line::from(format!(
+    fn draw(&self, frame: &mut Frame, scroll: &mut usize, status: &str, now: Instant) {
+        let header = format!(
             "adsb-flipdot live | {status} | {} aircraft | {} frames | expire {} s",
-            table.rows.len(),
-            table.frames,
-            table.expire.as_secs()
-        ))
-        .style(Style::new().add_modifier(Modifier::BOLD)),
-        header_area,
-    );
-
-    let header = Row::new(
-        COLUMNS
+            self.rows.len(),
+            self.frames,
+            self.expire.as_secs()
+        );
+        let rows = self
+            .rows
             .iter()
-            .enumerate()
-            .map(|(i, (title, _, _))| cell(title.to_string(), i)),
-    )
-    .style(Style::new().add_modifier(Modifier::REVERSED));
-
-    let rows = table.rows.iter().map(|(icao, a)| {
-        let age = a
-            .last_seen
-            .map(|seen| now.duration_since(seen))
-            .unwrap_or_default();
-        let style = if age < FRESH {
-            Style::new().add_modifier(Modifier::BOLD)
-        } else if age > table.expire / 2 {
-            Style::new().add_modifier(Modifier::DIM)
-        } else {
-            Style::new()
-        };
-        let cells = [
-            format!("{icao:06x}"),
-            a.callsign.clone().unwrap_or_default(),
-            a.squawk.clone().unwrap_or_default(),
-            opt(a.altitude_ft, |v| v.to_string()),
-            opt(a.groundspeed_kt, |v| format!("{v:.0}")),
-            opt(a.track_deg, |v| format!("{v:.0}°")),
-            opt(a.vertical_rate_fpm, |v| format!("{v:+}")),
-            opt(a.latitude, |v| format!("{v:.4}")),
-            opt(a.longitude, |v| format!("{v:.4}")),
-            opt(a.rssi_db, |v| format!("{v:.1}")),
-            a.messages.to_string(),
-            format!("{}s", age.as_secs()),
-        ];
-        Row::new(cells.into_iter().enumerate().map(|(i, text)| cell(text, i))).style(style)
-    });
-
-    let mut block = Block::new().borders(Borders::BOTTOM);
-    if table.rows.is_empty() {
-        block = block.title_bottom(Line::from(" waiting for aircraft ").centered());
+            .map(|(icao, a)| {
+                let age = a
+                    .last_seen
+                    .map(|seen| now.duration_since(seen))
+                    .unwrap_or_default();
+                let cells = vec![
+                    format!("{icao:06x}"),
+                    a.callsign.clone().unwrap_or_default(),
+                    a.squawk.clone().unwrap_or_default(),
+                    opt(a.altitude_ft, |v| v.to_string()),
+                    opt(a.groundspeed_kt, |v| format!("{v:.0}")),
+                    opt(a.track_deg, |v| format!("{v:.0}°")),
+                    opt(a.vertical_rate_fpm, |v| format!("{v:+}")),
+                    opt(a.latitude, |v| format!("{v:.4}")),
+                    opt(a.longitude, |v| format!("{v:.4}")),
+                    opt(a.rssi_db, |v| format!("{v:.1}")),
+                    a.messages.to_string(),
+                    format!("{}s", age.as_secs()),
+                ];
+                (cells, age_style(age, self.expire))
+            })
+            .collect();
+        tui::draw_table(
+            frame,
+            scroll,
+            header,
+            &COLUMNS,
+            rows,
+            "waiting for aircraft",
+        );
     }
-    let widget = TableWidget::new(rows, COLUMNS.map(|(_, width, _)| Constraint::Length(width)))
-        .header(header)
-        .column_spacing(2)
-        .block(block);
 
-    // Keep the scroll position inside the table as rows come and go.
-    *scroll = (*scroll).min(table.rows.len().saturating_sub(1));
-    let mut state = TableState::new().with_offset(*scroll);
-    frame.render_stateful_widget(widget, table_area, &mut state);
-
-    frame.render_widget(
-        Line::from("q / Esc / Ctrl-C quit   ↑ ↓ PgUp PgDn Home scroll")
-            .style(Style::new().add_modifier(Modifier::DIM)),
-        footer_area,
-    );
-}
-
-/// What a key press asks the event loop to do.
-#[derive(Debug, PartialEq, Eq)]
-enum Action {
-    Quit,
-    Redraw,
-    None,
-}
-
-fn handle_event(event: &Event, scroll: &mut usize) -> Action {
-    match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
-            // Raw mode turns Ctrl-C into a plain key press instead of SIGINT.
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
-            KeyCode::Down | KeyCode::Char('j') => {
-                *scroll = scroll.saturating_add(1);
-                Action::Redraw
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                *scroll = scroll.saturating_sub(1);
-                Action::Redraw
-            }
-            KeyCode::PageDown => {
-                *scroll = scroll.saturating_add(PAGE);
-                Action::Redraw
-            }
-            KeyCode::PageUp => {
-                *scroll = scroll.saturating_sub(PAGE);
-                Action::Redraw
-            }
-            KeyCode::Home => {
-                *scroll = 0;
-                Action::Redraw
-            }
-            _ => Action::None,
-        },
-        Event::Resize(..) => Action::Redraw,
-        _ => Action::None,
-    }
-}
-
-/// Restores the terminal when dropped, also when `run` returns an error.
-struct TerminalGuard;
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        ratatui::restore();
+    fn summary(&self) -> String {
+        format!(
+            "{} frames received, {} aircraft in view at exit",
+            self.frames,
+            self.rows.len()
+        )
     }
 }
 
 pub async fn run(args: LiveArgs) -> Result<()> {
-    let mut stream = FrameStream::open(&args.source).await?;
-    let status = stream.description().to_string();
     let mut table = Table::new(Duration::from_secs(args.expire));
-    let mut scroll = 0usize;
-
-    // `try_init` enters raw mode and the alternate screen, and installs a
-    // panic hook that restores the terminal.
-    let mut terminal =
-        ratatui::try_init().context("cannot set up the terminal (is stdout a TTY?)")?;
-    let guard = TerminalGuard;
-
-    let mut events = EventStream::new();
-    let sigint = tokio::signal::ctrl_c();
-    tokio::pin!(sigint);
-    let mut tick = tokio::time::interval(TICK);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    let mut dirty = true;
-    let mut last_draw = Instant::now();
-    loop {
-        tokio::select! {
-            // SIGINT sent from outside, e.g. `kill -INT`.
-            _ = &mut sigint => break,
-            msg = stream.recv() => match msg {
-                Some(msg) => dirty |= table.update(&msg, Instant::now()),
-                None => break,
-            },
-            event = events.next() => match event {
-                Some(Ok(event)) => match handle_event(&event, &mut scroll) {
-                    Action::Quit => break,
-                    Action::Redraw => dirty = true,
-                    Action::None => {}
-                },
-                Some(Err(e)) => return Err(e).context("terminal input failed"),
-                None => break,
-            },
-            _ = tick.tick() => {
-                let now = Instant::now();
-                dirty |= table.expire(now);
-                if dirty || now.duration_since(last_draw) >= IDLE_REDRAW {
-                    terminal
-                        .draw(|frame| draw(frame, &table, &mut scroll, &status, now))
-                        .context("cannot draw to the terminal")?;
-                    dirty = false;
-                    last_draw = now;
-                }
-            }
-        }
-    }
-
-    drop(guard);
-    let result = stream.close().await;
-    eprintln!(
-        "adsb-flipdot: {} frames received, {} aircraft in view at exit",
-        table.frames,
-        table.rows.len()
-    );
-    result
+    tui::run(&args.source, &mut table).await
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::source::tests::timed;
+    use crate::tui::tests::screen;
 
     // Reference frames from "The 1090 Megahertz Riddle" (Junzi Sun).
-    const IDENT: &str = "8d4840d6202cc371c32ce0576098"; // 4840d6, KLM1023
-    const VELOCITY: &str = "8d485020994409940838175b284f"; // 485020, 159 kt
-    const POS_EVEN: &str = "8d40621d58c382d690c8ac2863a7"; // 40621d
-    const POS_ODD: &str = "8d40621d58c386435cc412692ad6";
+    pub(crate) const IDENT: &str = "8d4840d6202cc371c32ce0576098"; // 4840d6, KLM1023
+    pub(crate) const VELOCITY: &str = "8d485020994409940838175b284f"; // 485020, 159 kt
+    pub(crate) const POS_EVEN: &str = "8d40621d58c382d690c8ac2863a7"; // 40621d
+    pub(crate) const POS_ODD: &str = "8d40621d58c386435cc412692ad6";
     const SECS_30: Duration = Duration::from_secs(30);
 
     #[test]
     fn identification_creates_row_with_callsign() {
         let mut t = Table::new(SECS_30);
-        assert!(t.update(&timed(IDENT, 1.0), Instant::now()));
+        assert_eq!(t.update(&timed(IDENT, 1.0), Instant::now()), Some(0x4840d6));
         let a = &t.rows[&0x4840d6];
         assert_eq!(a.callsign.as_deref(), Some("KLM1023"));
         assert_eq!(a.messages, 1);
@@ -414,10 +262,12 @@ mod tests {
         let now = Instant::now();
         t.update(&timed(POS_ODD, 1.0), now);
         assert_eq!(t.rows[&0x40621d].latitude, None, "one frame is not enough");
+        assert_eq!(t.rows[&0x40621d].position_time, None);
         t.update(&timed(POS_EVEN, 2.0), now);
         let a = &t.rows[&0x40621d];
         assert!((a.latitude.unwrap() - 52.2572).abs() < 0.001, "{a:?}");
         assert!((a.longitude.unwrap() - 3.9194).abs() < 0.001, "{a:?}");
+        assert_eq!(a.position_time, Some(2.0));
         assert_eq!(a.altitude_ft, Some(38000));
         assert_eq!(a.messages, 2);
     }
@@ -427,7 +277,10 @@ mod tests {
         // DF4 altitude reply: the address comes from the checksum, so it
         // cannot be trusted on its own.
         let mut t = Table::new(SECS_30);
-        assert!(!t.update(&timed("200004bb11d2c1", 1.0), Instant::now()));
+        assert_eq!(
+            t.update(&timed("200004bb11d2c1", 1.0), Instant::now()),
+            None
+        );
         assert!(t.rows.is_empty());
     }
 
@@ -437,7 +290,7 @@ mod tests {
         let now = Instant::now();
         // The aircraft is known from an earlier verified message.
         t.rows.insert(0x503d48, Aircraft::default());
-        assert!(t.update(&timed("200004bb11d2c1", 2.0), now));
+        assert_eq!(t.update(&timed("200004bb11d2c1", 2.0), now), Some(0x503d48));
         let a = &t.rows[&0x503d48];
         assert_eq!(a.altitude_ft, Some(6875));
         assert_eq!(a.messages, 1);
@@ -462,27 +315,6 @@ mod tests {
         assert!(t.cpr.is_empty(), "decoder state is pruned too");
     }
 
-    /// Draw the table into an in-memory terminal and return its text lines.
-    fn screen(t: &Table, scroll: &mut usize, now: Instant, height: u16) -> Vec<String> {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let mut terminal = Terminal::new(TestBackend::new(110, height)).unwrap();
-        terminal
-            .draw(|frame| draw(frame, t, scroll, "test", now))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        (0..buffer.area.height)
-            .map(|y| {
-                (0..buffer.area.width)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
-    }
-
     #[test]
     fn draw_shows_header_columns_and_aircraft_row() {
         let mut t = Table::new(SECS_30);
@@ -490,7 +322,7 @@ mod tests {
         t.update(&timed(IDENT, 1.0), start);
         t.update(&timed(VELOCITY, 1.0), start);
 
-        let lines = screen(&t, &mut 0, start + Duration::from_secs(7), 10);
+        let lines = screen(&t, &mut 0, start + Duration::from_secs(7), 110, 10);
         assert!(
             lines[0].contains("2 aircraft | 2 frames | expire 30 s"),
             "{}",
@@ -513,7 +345,7 @@ mod tests {
     #[test]
     fn draw_empty_table_shows_placeholder() {
         let t = Table::new(SECS_30);
-        let lines = screen(&t, &mut 0, Instant::now(), 8);
+        let lines = screen(&t, &mut 0, Instant::now(), 110, 8);
         assert!(
             lines.iter().any(|l| l.contains("waiting for aircraft")),
             "{lines:#?}"
@@ -529,56 +361,12 @@ mod tests {
 
         // Scrolled by one: the first aircraft is off screen.
         let mut scroll = 1;
-        let lines = screen(&t, &mut scroll, now, 10);
+        let lines = screen(&t, &mut scroll, now, 110, 10);
         assert!(lines[2].starts_with("485020"), "{}", lines[2]);
 
         // Far past the end: clamped to the last row.
         let mut scroll = 99;
-        screen(&t, &mut scroll, now, 10);
+        screen(&t, &mut scroll, now, 110, 10);
         assert_eq!(scroll, 1);
-    }
-
-    #[test]
-    fn keys_quit_and_scroll() {
-        use crossterm::event::KeyEvent;
-        let key = |code, modifiers| Event::Key(KeyEvent::new(code, modifiers));
-        let none = KeyModifiers::NONE;
-        let mut scroll = 0;
-
-        assert_eq!(
-            handle_event(&key(KeyCode::Char('q'), none), &mut scroll),
-            Action::Quit
-        );
-        assert_eq!(
-            handle_event(&key(KeyCode::Esc, none), &mut scroll),
-            Action::Quit
-        );
-        assert_eq!(
-            handle_event(&key(KeyCode::Char('c'), KeyModifiers::CONTROL), &mut scroll),
-            Action::Quit
-        );
-        assert_eq!(
-            handle_event(&key(KeyCode::Char('c'), none), &mut scroll),
-            Action::None
-        );
-
-        assert_eq!(
-            handle_event(&key(KeyCode::Down, none), &mut scroll),
-            Action::Redraw
-        );
-        assert_eq!(scroll, 1);
-        handle_event(&key(KeyCode::PageDown, none), &mut scroll);
-        assert_eq!(scroll, 11);
-        handle_event(&key(KeyCode::Up, none), &mut scroll);
-        assert_eq!(scroll, 10);
-        handle_event(&key(KeyCode::Home, none), &mut scroll);
-        assert_eq!(scroll, 0);
-        handle_event(&key(KeyCode::Up, none), &mut scroll);
-        assert_eq!(scroll, 0, "does not underflow");
-
-        assert_eq!(
-            handle_event(&Event::Resize(80, 24), &mut scroll),
-            Action::Redraw
-        );
     }
 }

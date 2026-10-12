@@ -1,8 +1,15 @@
 //! adsb-flipdot: receive Mode S / ADS-B frames from an RTL2832U dongle.
 
+mod aircraft_db;
 mod dump;
+mod filter;
+mod flipdot;
 mod live;
+mod record;
+mod run;
 mod source;
+mod template;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -16,6 +23,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Show aircraft passing the point of interest on the flipdot display.
+    Run(run::RunArgs),
+    /// List the codes that can be used in `run --template`.
+    TemplateCodes,
     /// Diagnostic tools.
     Debug {
         #[command(subcommand)]
@@ -27,16 +38,31 @@ enum Command {
 enum DebugCommand {
     /// Print every received Mode S / ADS-B frame to the console.
     Dump(dump::DumpArgs),
+    /// Save every received frame to a JSON lines file, for replay with
+    /// --device-record-file.
+    Record(record::RecordArgs),
     /// Show a continuously updated table with one row per aircraft.
     Live(live::LiveArgs),
+    /// Show aircraft passing a point within a radius and below an altitude.
+    Filter(filter::FilterArgs),
+    /// Preview text as dots, the way the flipdot panel will show it.
+    Flipdot(flipdot::FlipdotArgs),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Run(args) => run::run(args).await,
+        Command::TemplateCodes => {
+            print!("{}", template::help());
+            Ok(())
+        }
         Command::Debug { command } => match command {
             DebugCommand::Dump(args) => dump::run(args).await,
+            DebugCommand::Record(args) => record::run(args).await,
             DebugCommand::Live(args) => live::run(args).await,
+            DebugCommand::Filter(args) => filter::run(args).await,
+            DebugCommand::Flipdot(args) => flipdot::run(args),
         },
     }
 }
@@ -63,6 +89,97 @@ mod tests {
         };
         assert_eq!(args.format, dump::Format::Raw);
         assert_eq!(args.source.gain, 496);
+    }
+
+    #[test]
+    fn debug_flipdot_parses() {
+        let cli = Cli::try_parse_from([
+            "adsb-flipdot",
+            "debug",
+            "flipdot",
+            "SAS51B",
+            "FL390",
+            "--font",
+            "4x6",
+        ])
+        .unwrap();
+        let Command::Debug {
+            command: DebugCommand::Flipdot(args),
+        } = cli.command
+        else {
+            panic!("expected debug flipdot");
+        };
+        assert_eq!(args.text, ["SAS51B", "FL390"]);
+        assert_eq!(args.display.font, flipdot::Font::F4x6);
+        let display = &args.display;
+        assert_eq!((display.width, display.height, display.panels), (28, 14, 2));
+        assert_eq!(display.display_size(), (56, 14));
+    }
+
+    #[test]
+    fn run_parses_filter_and_display_options() {
+        let cli = Cli::try_parse_from([
+            "adsb-flipdot",
+            "run",
+            "--radius",
+            "8",
+            "--max-altitude",
+            "3000",
+            "--panels",
+            "3",
+            "--page",
+            "4",
+            "--cache-dir",
+            "/tmp/x",
+            "--no-aircraft-db",
+        ])
+        .unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected run");
+        };
+        assert_eq!((args.filter.radius, args.filter.max_altitude), (8.0, 3000));
+        assert_eq!((args.filter.lat, args.filter.lon), (53.7271256, 9.9065838));
+        assert_eq!(args.display.display_size(), (84, 14));
+        assert_eq!(args.page, 4);
+        assert_eq!(
+            args.filter.db.cache_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/x"))
+        );
+        assert!(args.filter.db.no_aircraft_db);
+    }
+
+    #[test]
+    fn run_accepts_several_templates_and_rejects_bad_ones() {
+        let cli = Cli::try_parse_from([
+            "adsb-flipdot",
+            "run",
+            "--template",
+            "{{ callsign }} {{ aircraft code }} {{ track }}",
+            "--template",
+            "{{ name }}\\n{{ altitude }}",
+            "--scroll",
+            "always",
+        ])
+        .unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected run");
+        };
+        assert_eq!(args.templates.len(), 2);
+        assert_eq!(args.display.scroll, flipdot::Scroll::Always);
+
+        let error = Cli::try_parse_from(["adsb-flipdot", "run", "--template", "{{ wingspan }}"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("unknown template code `wingspan`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn template_codes_command_exists() {
+        let cli = Cli::try_parse_from(["adsb-flipdot", "template-codes"]).unwrap();
+        assert!(matches!(cli.command, Command::TemplateCodes));
     }
 
     #[test]
