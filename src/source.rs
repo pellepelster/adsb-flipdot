@@ -238,15 +238,35 @@ async fn open_source(args: &SourceArgs) -> Result<IqAsyncSource> {
             let gain = if args.agc { None } else { Some(args.gain) };
             IqAsyncSource::from_rtlsdr(args.device, CENTER_FREQ_HZ, SAMPLE_RATE_HZ, gain)
                 .await
-                .with_context(|| {
-                    format!(
-                        "cannot open RTL-SDR device {}. Is the dongle plugged in, \
-                         the DVB kernel driver blacklisted and the udev rule installed? \
-                         (`mise run setup-udev`)",
-                        args.device
-                    )
+                .map_err(|e| {
+                    let connected = desperado::rtlsdr::list_devices().ok().map(|d| d.len());
+                    anyhow::anyhow!(device_error(args.device, connected, &e.to_string()))
                 })
         }
+    }
+}
+
+/// Explain why the dongle could not be opened. `connected` is the number of
+/// dongles on the bus, if they could be counted; it tells a missing dongle
+/// from one that is there but cannot be used.
+fn device_error(device: usize, connected: Option<usize>, cause: &str) -> String {
+    const REPLAY_HINT: &str = "or replay a recording with `--device-record-file <PATH>`";
+    match connected {
+        Some(0) => {
+            format!("no RTL-SDR dongle found\n  Plug the dongle in and try again, {REPLAY_HINT}.")
+        }
+        Some(count) if device >= count => format!(
+            "RTL-SDR device {device} not found, {}\n  Pick one with `--device <INDEX>`, {REPLAY_HINT}.",
+            if count == 1 {
+                "only device 0 is connected".to_string()
+            } else {
+                format!("only devices 0 to {} are connected", count - 1)
+            }
+        ),
+        _ => format!(
+            "cannot open RTL-SDR device {device}: {cause}\n  Is the DVB kernel driver blacklisted, the udev rule installed \
+             (`mise run setup-udev`) and no other program using the dongle?"
+        ),
     }
 }
 
@@ -588,6 +608,26 @@ pub(crate) mod tests {
             "needs a recording"
         );
         assert!(parse(&["--device-record-file", "a", "--device-record-speed", "0"]).is_err());
+    }
+
+    #[test]
+    fn device_error_tells_missing_dongle_from_unusable_one() {
+        let none = device_error(0, Some(0), "RTL-SDR device not found");
+        assert!(none.starts_with("no RTL-SDR dongle found\n"), "{none}");
+        assert!(none.contains("--device-record-file"), "{none}");
+
+        let index = device_error(1, Some(1), "RTL-SDR device not found");
+        assert!(index.contains("device 1 not found"), "{index}");
+        assert!(index.contains("only device 0 is connected"), "{index}");
+        let index = device_error(5, Some(3), "RTL-SDR device not found");
+        assert!(index.contains("only devices 0 to 2"), "{index}");
+
+        for connected in [Some(1), None] {
+            let busy = device_error(0, connected, "failed to claim USB interface");
+            assert!(busy.contains("cannot open RTL-SDR device 0"), "{busy}");
+            assert!(busy.contains("failed to claim USB interface"), "{busy}");
+            assert!(busy.contains("setup-udev"), "{busy}");
+        }
     }
 
     #[test]

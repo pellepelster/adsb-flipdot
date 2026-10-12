@@ -11,6 +11,8 @@ mod source;
 mod template;
 mod tui;
 
+use std::process::ExitCode;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -50,8 +52,20 @@ enum DebugCommand {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    match Cli::parse().command {
+async fn main() -> ExitCode {
+    // Errors are printed here and not returned: returning them makes the
+    // runtime print a backtrace whenever RUST_BACKTRACE is set.
+    match run(Cli::parse().command).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run(command: Command) -> Result<()> {
+    match command {
         Command::Run(args) => run::run(args).await,
         Command::TemplateCodes => {
             print!("{}", template::help());
