@@ -1,0 +1,26 @@
+[package]
+name = "adsb-flipdot"
+version = "0.1.0"
+edition = "2024"
+description = "Receive ADS-B messages from an RTL2832U dongle and print them to the console"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+desperado = { version = "0.5", features = ["rtlsdr"] }
+rs1090 = { version = "0.7", default-features = false, features = ["rtlsdr"] }
+hex = "0.4"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+ratatui = "0.30.2"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+
+[lints.rust]
+# `cross` wraps the linker in a tracing shell script whose stderr is harmless.
+linker_messages = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

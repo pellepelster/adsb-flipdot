@@ -1,0 +1,74 @@
+# mise configuration for adsb-flipdot (Rust)
+# https://mise.jdx.dev
+
+[tools]
+rust = { version = "stable", components = "clippy,rustfmt,rust-analyzer" }
+"cargo:cargo-watch" = "latest"
+"cargo:cargo-nextest" = "latest"
+"cargo:cross" = "latest"
+
+[env]
+RUST_BACKTRACE = "1"
+RUST_LOG = "info"
+
+[settings]
+experimental = true
+
+[tasks.build]
+description = "Build the project (debug)"
+run = "cargo build"
+
+[tasks.release]
+description = "Build the project (release)"
+run = "cargo build --release"
+
+[tasks.run]
+description = "Run adsb-flipdot (release build), e.g. `mise run run debug dump`"
+run = "cargo run --release --"
+
+[tasks.test]
+description = "Run tests"
+run = "cargo nextest run"
+
+[tasks.watch]
+description = "Rebuild and run tests on change"
+run = "cargo watch -x check -x 'nextest run'"
+
+[tasks.fmt]
+description = "Format sources"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Run clippy with warnings as errors"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks.check]
+description = "Format check + clippy + tests"
+depends = ["fmt-check", "lint", "test"]
+
+[tasks.fmt-check]
+description = "Verify formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks.dump]
+description = "Print all received ADS-B frames (adsb-flipdot debug dump)"
+run = "cargo run --release -- debug dump"
+
+[tasks.live]
+description = "Live aircraft table (adsb-flipdot debug live)"
+run = "cargo run --release -- debug live"
+
+[tasks.build-pi]
+description = "Cross-compile a static release binary for 64-bit Raspberry Pi (needs Docker)"
+run = [
+  "cross build --release --target aarch64-unknown-linux-musl",
+  "ls -lh target/aarch64-unknown-linux-musl/release/adsb-flipdot",
+]
+
+[tasks.setup-udev]
+description = "Install udev rule + DVB blacklist for the RTL2832U dongle (needs sudo)"
+run = "./deploy/setup-udev.sh"
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "cargo clean"
