@@ -29,8 +29,8 @@ pub enum Code {
 /// means and what it looks like.
 pub struct CodeInfo {
     pub code: Code,
-    /// Names accepted in a template. The first is the preferred one.
-    pub names: &'static [&'static str],
+    /// The name used in a template.
+    pub name: &'static str,
     pub description: &'static str,
     pub example: &'static str,
 }
@@ -39,73 +39,73 @@ pub struct CodeInfo {
 pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: Code::Name,
-        names: &["name"],
+        name: "name",
         description: "Callsign, or the ICAO address while no callsign is known",
         example: "EZY32GY",
     },
     CodeInfo {
         code: Code::Callsign,
-        names: &["callsign", "flight"],
+        name: "callsign",
         description: "Callsign as broadcast, usually the flight number",
         example: "EZY32GY",
     },
     CodeInfo {
         code: Code::Icao,
-        names: &["icao", "hex"],
+        name: "icao",
         description: "24-bit ICAO address of the airframe",
         example: "405F12",
     },
     CodeInfo {
         code: Code::AircraftType,
-        names: &["aircraft_code", "type", "typecode"],
+        name: "aircraft_code",
         description: "ICAO aircraft type designator (from the aircraft database)",
         example: "A320",
     },
     CodeInfo {
         code: Code::TypeName,
-        names: &["aircraft_name", "type_name"],
+        name: "aircraft_name",
         description: "Aircraft type in words (from the aircraft database)",
         example: "AIRBUS A-320",
     },
     CodeInfo {
         code: Code::Registration,
-        names: &["registration", "reg"],
+        name: "registration",
         description: "Tail number (from the aircraft database)",
         example: "G-EZTB",
     },
     CodeInfo {
         code: Code::Altitude,
-        names: &["altitude", "alt"],
+        name: "altitude",
         description: "Barometric altitude in feet",
         example: "1200ft",
     },
     CodeInfo {
         code: Code::Track,
-        names: &["track", "course"],
+        name: "track",
         description: "Direction of flight over ground, 001 to 360",
         example: "153°",
     },
     CodeInfo {
         code: Code::Speed,
-        names: &["speed", "groundspeed"],
+        name: "speed",
         description: "Speed over ground in knots",
         example: "151kt",
     },
     CodeInfo {
         code: Code::Distance,
-        names: &["distance", "dist"],
+        name: "distance",
         description: "Distance from the point of interest in kilometres",
         example: "1.5km",
     },
     CodeInfo {
         code: Code::Index,
-        names: &["index"],
+        name: "index",
         description: "Position of this aircraft among those in the circle",
         example: "1",
     },
     CodeInfo {
         code: Code::Count,
-        names: &["count"],
+        name: "count",
         description: "Number of aircraft in the circle",
         example: "2",
     },
@@ -125,7 +125,7 @@ impl Code {
         let name = normalize(name);
         CODES
             .iter()
-            .find(|info| info.names.contains(&name.as_str()))
+            .find(|info| info.name == name)
             .map(|info| info.code)
     }
 
@@ -193,11 +193,7 @@ impl Template {
                     format!(
                         "unknown template code `{name}`. Known codes: {}. \
                          Run `adsb-flipdot template-codes` for details",
-                        CODES
-                            .iter()
-                            .map(|c| c.names[0])
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        CODES.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
                     )
                 })?;
                 parts.push(Part::Code(code));
@@ -261,7 +257,7 @@ pub const DEFAULT_TEMPLATES: [&str; 2] = [
 
 /// The text printed by `adsb-flipdot template-codes`.
 pub fn help() -> String {
-    let name_width = CODES.iter().map(|c| c.names[0].len()).max().unwrap_or(0) + 6;
+    let name_width = CODES.iter().map(|c| c.name.len()).max().unwrap_or(0) + 6;
     let example_width = CODES
         .iter()
         .map(|c| c.example.chars().count())
@@ -274,13 +270,9 @@ pub fn help() -> String {
         "CODE", "EXAMPLE", "MEANING"
     ));
     for info in CODES {
-        let code = format!("{{{{ {} }}}}", info.names[0]);
-        let aliases = match &info.names[1..] {
-            [] => String::new(),
-            more => format!(" (also: {})", more.join(", ")),
-        };
+        let code = format!("{{{{ {} }}}}", info.name);
         out.push_str(&format!(
-            "  {code:<name_width$}  {:<example_width$}  {}{aliases}\n",
+            "  {code:<name_width$}  {:<example_width$}  {}\n",
             info.example, info.description
         ));
     }
@@ -358,19 +350,26 @@ pub(crate) mod tests {
         let flight = easyjet();
         for info in CODES {
             let value = info.code.value(&flight, 0, 2);
-            assert_eq!(value.as_deref(), Some(info.example), "{}", info.names[0]);
+            assert_eq!(value.as_deref(), Some(info.example), "{}", info.name);
         }
     }
 
     #[test]
-    fn every_name_and_alias_parses_to_its_code() {
+    fn every_name_parses_to_its_code() {
         let mut seen = std::collections::BTreeSet::new();
         for info in CODES {
-            for name in info.names {
-                assert_eq!(Code::from_name(name), Some(info.code), "{name}");
-                assert!(seen.insert(*name), "name `{name}` is used twice");
-                assert_eq!(normalize(name), *name, "names are stored normalized");
-            }
+            let name = info.name;
+            assert_eq!(Code::from_name(name), Some(info.code), "{name}");
+            assert!(seen.insert(name), "name `{name}` is used twice");
+            assert_eq!(normalize(name), name, "names are stored normalized");
+        }
+    }
+
+    #[test]
+    fn a_code_has_no_second_name() {
+        for name in ["type", "typecode", "flight", "hex", "reg", "alt", "dist"] {
+            let error = Template::parse(&format!("{{{{ {name} }}}}")).unwrap_err();
+            assert!(error.contains("unknown template code"), "{name}: {error}");
         }
     }
 
@@ -389,7 +388,6 @@ pub(crate) mod tests {
             "Aircraft Code",
             "AIRCRAFT-CODE",
             "  aircraft   code  ",
-            "type",
         ] {
             assert_eq!(
                 lines(&format!("{{{{{name}}}}}"), &easyjet()),
@@ -513,19 +511,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn help_lists_every_code_with_example_and_aliases() {
+    fn help_lists_every_code_with_example() {
         let help = help();
         for info in CODES {
             assert!(
-                help.contains(&format!("{{{{ {} }}}}", info.names[0])),
+                help.contains(&format!("{{{{ {} }}}}", info.name)),
                 "{}",
-                info.names[0]
+                info.name
             );
             assert!(help.contains(info.example), "{}", info.example);
             assert!(help.contains(info.description), "{}", info.description);
-            for alias in &info.names[1..] {
-                assert!(help.contains(alias), "{alias}");
-            }
         }
         assert!(help.contains("{{ aircraft code }} is the same as {{ aircraft_code }}"));
         assert!(help.contains(DEFAULT_TEMPLATES[0]));
