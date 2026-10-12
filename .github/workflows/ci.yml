@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts only bloat the cache; CI always builds from a restored target dir.
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # PRs restore the cache from main but never write their own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Test
+        run: cargo nextest run --locked
+
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64
+            target: x86_64-unknown-linux-gnu
+            cargo: cargo
+          # Same static binary as `mise run build-pi`.
+          - name: raspberry-pi
+            target: aarch64-unknown-linux-musl
+            cargo: cross
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        if: matrix.cargo == 'cross'
+        with:
+          tool: cross
+      - name: Build
+        run: ${{ matrix.cargo }} build --release --locked --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v5
+        with:
+          name: adsb-flipdot-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/adsb-flipdot
+          if-no-files-found: error
