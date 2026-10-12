@@ -55,7 +55,14 @@ pub async fn run(args: DumpArgs) -> Result<()> {
     result
 }
 
-fn print_message(mut msg: TimedMessage, format: Format) {
+/// One frame as a single line of JSON: time, raw frame, signal level and
+/// everything that could be decoded from it.
+pub fn to_json(mut msg: TimedMessage) -> serde_json::Result<String> {
+    msg.message = Message::try_from(msg.frame.as_slice()).ok();
+    serde_json::to_string(&msg)
+}
+
+fn print_message(msg: TimedMessage, format: Format) {
     let hex = hex::encode(&msg.frame);
 
     match format {
@@ -75,13 +82,10 @@ fn print_message(mut msg: TimedMessage, format: Format) {
                 Err(e) => println!("  (undecodable: {e})"),
             }
         }
-        Format::Json => {
-            msg.message = Message::try_from(msg.frame.as_slice()).ok();
-            match serde_json::to_string(&msg) {
-                Ok(json) => println!("{json}"),
-                Err(e) => eprintln!("adsb-flipdot: json error: {e}"),
-            }
-        }
+        Format::Json => match to_json(msg) {
+            Ok(json) => println!("{json}"),
+            Err(e) => eprintln!("adsb-flipdot: json error: {e}"),
+        },
     }
 }
 
