@@ -196,7 +196,7 @@ for a, pa, b, pb in runways:
             weight="bold",
         )
 ax, ay = project(middle)
-text(ax, min(project(p)[1] for p in ends) - 34, "Hamburg Airport (HAM)", size=21, anchor="middle", weight="bold")
+text(ax, min(project(p)[1] for p in ends) - 34, "Hamburg Airport (EDDH)", size=21, anchor="middle", weight="bold")
 
 # --- box --------------------------------------------------------------------
 
