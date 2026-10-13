@@ -47,10 +47,23 @@ description = "Verify formatting"
 run = "cargo fmt --all -- --check"
 
 [tasks."build:pi"]
+description = "Cross-compile static release binaries for 64-bit and 32-bit Raspberry Pi (needs Docker)"
+depends = ["build:pi:64", "build:pi:32"]
+
+# Each target has its own target directory: the two cross images differ in
+# glibc and cannot run each other's build scripts.
+[tasks."build:pi:64"]
 description = "Cross-compile a static release binary for 64-bit Raspberry Pi (needs Docker)"
 run = [
-  "cross build --release --target aarch64-unknown-linux-musl",
-  "ls -lh target/aarch64-unknown-linux-musl/release/adsb-flipdot",
+  "cross build --release --target aarch64-unknown-linux-musl --target-dir target/pi64",
+  "ls -lh target/pi64/aarch64-unknown-linux-musl/release/adsb-flipdot",
+]
+
+[tasks."build:pi:32"]
+description = "Cross-compile a static release binary for 32-bit Raspberry Pi, e.g. the Pi 2 (needs Docker)"
+run = [
+  "cross build --release --target armv7-unknown-linux-musleabihf --target-dir target/pi32",
+  "ls -lh target/pi32/armv7-unknown-linux-musleabihf/release/adsb-flipdot",
 ]
 
 [tasks.setup-udev]

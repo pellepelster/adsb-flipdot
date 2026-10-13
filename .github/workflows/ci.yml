@@ -46,8 +46,11 @@ jobs:
           - name: x86_64
             target: x86_64-unknown-linux-gnu
             cargo: cargo
-          - name: raspberry-pi
+          - name: raspberry-pi-64
             target: aarch64-unknown-linux-musl
+            cargo: cross
+          - name: raspberry-pi-32
+            target: armv7-unknown-linux-musleabihf
             cargo: cross
     steps:
       - uses: actions/checkout@v5
