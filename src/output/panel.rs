@@ -8,44 +8,28 @@
 //! per dot.
 
 use anyhow::{Result, bail};
-use clap::ValueEnum;
 
 use crate::domain::dots::Flip;
-use crate::output::board::{Board, BoardArgs, GpioPins, MAX_COLUMNS, MAX_PANELS, MAX_ROWS, Pins};
+use crate::output::board::{Board, BoardConfig, GpioPins, MAX_COLUMNS, MAX_PANELS, MAX_ROWS, Pins};
 use crate::output::{Note, Output};
 
-#[derive(clap::Args, Debug)]
-pub struct PanelArgs {
-    /// Drive the flipdot panels through the adapter board on the Pi's GPIO
-    /// pins, next to the preview in the terminal.
-    #[arg(long)]
-    pub gpio: bool,
-
-    #[command(flatten)]
-    pub board: BoardArgs,
-
-    /// COL-SEL line of each panel, in the order of the panels, e.g. `1,0`.
-    /// Without it the first panel is on COL-SEL0, the second on COL-SEL1
-    /// and so on.
-    #[arg(long, value_name = "LINES", value_delimiter = ',',
-          value_parser = clap::value_parser!(u8).range(0..MAX_PANELS as i64))]
+/// How the panels are wired to the adapter board and mounted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelConfig {
+    pub board: BoardConfig,
+    /// COL-SEL line of each panel, in the order of the panels. Empty if the
+    /// first panel is on COL-SEL0, the second on COL-SEL1 and so on.
     pub select: Vec<u8>,
-
     /// The first column of the panels is at the right of the display.
-    #[arg(long)]
     pub mirror_x: bool,
-
     /// The first row of the panels is at the bottom of the display.
-    #[arg(long)]
     pub mirror_y: bool,
-
-    /// Swap the two sides of the dots: use it if text shows up dark on a
-    /// bright display.
-    #[arg(long)]
+    /// The two sides of the dots are swapped.
     pub invert: bool,
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+/// How the panels are mounted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
     /// Panels side by side: a wide display.
     Row,
@@ -103,7 +87,7 @@ struct Geometry {
 
 impl Geometry {
     /// Fail if the board or the panels cannot address this display.
-    fn new(arrangement: Arrangement, args: &PanelArgs) -> Result<Self> {
+    fn new(arrangement: Arrangement, config: &PanelConfig) -> Result<Self> {
         let Arrangement { width, height, .. } = arrangement;
         let panels = arrangement.panels as usize;
         if width > MAX_COLUMNS || height > MAX_ROWS {
@@ -115,10 +99,10 @@ impl Geometry {
         if panels > MAX_PANELS {
             bail!("the adapter board selects at most {MAX_PANELS} panels, not {panels}");
         }
-        let select: Vec<usize> = if args.select.is_empty() {
+        let select: Vec<usize> = if config.select.is_empty() {
             (0..panels).collect()
         } else {
-            args.select.iter().map(|line| *line as usize).collect()
+            config.select.iter().map(|line| *line as usize).collect()
         };
         if select.len() != panels {
             bail!(
@@ -129,8 +113,8 @@ impl Geometry {
         Ok(Self {
             arrangement,
             select,
-            mirror_x: args.mirror_x,
-            mirror_y: args.mirror_y,
+            mirror_x: config.mirror_x,
+            mirror_y: config.mirror_y,
         })
     }
 
@@ -169,14 +153,14 @@ impl Panel<GpioPins> {
     /// Take the pins of the adapter board. The calling thread gets
     /// real-time priority where the system allows it, because it is the
     /// one that times the pulses.
-    pub fn open(arrangement: Arrangement, args: &PanelArgs) -> Result<Self> {
-        let geometry = Geometry::new(arrangement, args)?;
-        let (board, priority) = args.board.open()?;
+    pub fn open(arrangement: Arrangement, config: &PanelConfig) -> Result<Self> {
+        let geometry = Geometry::new(arrangement, config)?;
+        let (board, priority) = config.board.open()?;
         eprintln!(
             "adsb-flipdot: panels on {}, {priority}",
-            args.board.chip.display()
+            config.board.chip.display()
         );
-        Self::new(board, geometry, args.invert)
+        Self::new(board, geometry, config.invert)
     }
 }
 
@@ -239,7 +223,6 @@ mod tests {
     use crate::output::Display;
     use crate::output::board::line_number;
     use crate::output::board::tests::{FakePins, Log, PULSE, named};
-    use crate::tests::parse_args;
 
     /// Two 28x14 panels side by side.
     const TWO: Arrangement = Arrangement {
@@ -251,17 +234,26 @@ mod tests {
     /// Panels as high as the board can address: no rows below the display.
     const FULL_HEIGHT: Arrangement = Arrangement { height: 16, ..TWO };
 
-    fn try_geometry(arrangement: Arrangement, extra: &[&str]) -> Result<Geometry> {
-        Geometry::new(arrangement, &parse_args(extra))
+    /// Panels wired in order and mounted upright.
+    fn wiring() -> PanelConfig {
+        PanelConfig {
+            board: BoardConfig {
+                chip: "/dev/null".into(),
+                pulse: PULSE,
+            },
+            select: Vec::new(),
+            mirror_x: false,
+            mirror_y: false,
+            invert: false,
+        }
     }
 
-    fn geometry(arrangement: Arrangement, extra: &[&str]) -> Geometry {
-        try_geometry(arrangement, extra).unwrap()
+    fn geometry(arrangement: Arrangement, config: PanelConfig) -> Geometry {
+        Geometry::new(arrangement, &config).unwrap()
     }
 
     /// A panel on fake pins, with what it writes at its start left in the log.
-    fn panel(arrangement: Arrangement, extra: &[&str]) -> (Panel<FakePins>, Log) {
-        let args: PanelArgs = parse_args(extra);
+    fn panel(arrangement: Arrangement, config: PanelConfig) -> (Panel<FakePins>, Log) {
         let log = Log::default();
         let pins = FakePins {
             log: log.clone(),
@@ -269,8 +261,8 @@ mod tests {
         };
         let board = Board::new(pins, PULSE).unwrap();
         log.borrow_mut().clear();
-        let geometry = Geometry::new(arrangement, &args).unwrap();
-        let panel = Panel::new(board, geometry, args.invert).unwrap();
+        let geometry = Geometry::new(arrangement, &config).unwrap();
+        let panel = Panel::new(board, geometry, config.invert).unwrap();
         (panel, log)
     }
 
@@ -308,7 +300,7 @@ mod tests {
 
     #[test]
     fn panels_in_a_row_share_the_rows() {
-        let g = geometry(TWO, &[]);
+        let g = geometry(TWO, wiring());
         let place = |x, y| g.place(x, y).unwrap();
         assert_eq!(
             place(0, 0),
@@ -345,7 +337,7 @@ mod tests {
             layout: Layout::Column,
             ..TWO
         };
-        let g = geometry(column, &[]);
+        let g = geometry(column, wiring());
         let place = |x, y| g.place(x, y).unwrap();
         assert_eq!(place(3, 13).select, 0);
         assert_eq!(
@@ -361,7 +353,14 @@ mod tests {
 
     #[test]
     fn mirroring_turns_the_whole_display_round() {
-        let g = geometry(TWO, &["--mirror-x", "--mirror-y"]);
+        let g = geometry(
+            TWO,
+            PanelConfig {
+                mirror_x: true,
+                mirror_y: true,
+                ..wiring()
+            },
+        );
         assert_eq!(
             g.place(0, 0).unwrap(),
             Place {
@@ -370,15 +369,29 @@ mod tests {
                 column: 31
             }
         );
-        assert_eq!(geometry(TWO, &["--mirror-x"]).place(0, 0).unwrap().row, 1);
+        let sideways = PanelConfig {
+            mirror_x: true,
+            ..wiring()
+        };
+        assert_eq!(geometry(TWO, sideways).place(0, 0).unwrap().row, 1);
     }
 
     #[test]
     fn select_lines_can_be_assigned() {
-        let g = geometry(TWO, &["--select", "3,0"]);
+        let g = geometry(
+            TWO,
+            PanelConfig {
+                select: vec![3, 0],
+                ..wiring()
+            },
+        );
         assert_eq!(g.place(0, 0).unwrap().select, 3);
         assert_eq!(g.place(28, 0).unwrap().select, 0);
-        assert!(try_geometry(TWO, &["--select", "1"]).is_err(), "two panels");
+        let one_line = PanelConfig {
+            select: vec![1],
+            ..wiring()
+        };
+        assert!(Geometry::new(TWO, &one_line).is_err(), "two panels");
     }
 
     #[test]
@@ -390,7 +403,7 @@ mod tests {
                 height,
                 ..TWO
             };
-            try_geometry(arrangement, &[])
+            Geometry::new(arrangement, &wiring())
         };
         assert!(with(5, 28, 14).is_ok());
         assert!(with(6, 28, 14).is_err());
@@ -402,7 +415,7 @@ mod tests {
     #[test]
     fn rows_below_the_display_are_turned_off_at_the_start() {
         // Rows 15 and 16 of two 28 column panels.
-        let (panel, log) = panel(TWO, &[]);
+        let (panel, log) = panel(TWO, wiring());
         assert_eq!(pulses(&log).len(), 2 * 28 * 2);
         let written = named(&log);
         assert!(written.contains(&("ROW-HIGH", true)), "turned off");
@@ -410,7 +423,7 @@ mod tests {
         assert_eq!(written.last(), Some(&("ROW-HIGH", false)), "rows at rest");
         drop(panel);
 
-        let (_panel, log) = self::panel(FULL_HEIGHT, &[]);
+        let (_panel, log) = self::panel(FULL_HEIGHT, wiring());
         assert!(
             pulses(&log).is_empty(),
             "nothing below a full height display"
@@ -419,7 +432,7 @@ mod tests {
 
     #[test]
     fn a_frame_pulses_once_per_dot_that_differs() {
-        let (panel, log) = panel(FULL_HEIGHT, &[]);
+        let (panel, log) = panel(FULL_HEIGHT, wiring());
         let mut display = Display::new(56, 16);
         display.attach(panel);
 
@@ -446,11 +459,17 @@ mod tests {
             y: 0,
             on: true,
         };
-        let (mut plain, log) = panel(FULL_HEIGHT, &[]);
+        let (mut plain, log) = panel(FULL_HEIGHT, wiring());
         plain.flip(flip).unwrap();
         assert!(named(&log).contains(&("ROW-LOW", true)));
 
-        let (mut inverted, log) = panel(FULL_HEIGHT, &["--invert"]);
+        let (mut inverted, log) = panel(
+            FULL_HEIGHT,
+            PanelConfig {
+                invert: true,
+                ..wiring()
+            },
+        );
         inverted.flip(flip).unwrap();
         assert!(named(&log).contains(&("ROW-HIGH", true)));
     }

@@ -3,7 +3,6 @@
 //! A [`Scene`] is laid out text. Lines that fit are static; lines wider than
 //! the display scroll as a looping ticker, one dot per tick.
 
-use clap::ValueEnum;
 use embedded_graphics::mono_font::iso_8859_1::{
     FONT_4X6, FONT_5X7, FONT_5X8, FONT_6X10, FONT_7X14,
 };
@@ -18,7 +17,8 @@ use crate::domain::dots::FrameBuffer;
 /// character cells.
 const TICKER_GAP_CHARS: u32 = 2;
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+/// Which lines scroll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scroll {
     /// Only lines wider than the display scroll.
     Auto,
@@ -28,22 +28,17 @@ pub enum Scroll {
 
 /// Fixed-width fonts covering ISO 8859-1 (ASCII plus Western European
 /// characters such as ä, é, ß and °). Other characters are drawn as `?`.
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Font {
     /// 7 characters and 2 lines per panel. Tiny.
-    #[value(name = "4x6")]
     F4x6,
     /// 5 characters and 2 lines per panel. The classic dot matrix font.
-    #[value(name = "5x7")]
     F5x7,
     /// 5 characters and 1 line per panel.
-    #[value(name = "5x8")]
     F5x8,
     /// 4 characters and 1 line per panel.
-    #[value(name = "6x10")]
     F6x10,
     /// 4 characters per panel, 1 line, full panel height.
-    #[value(name = "7x14")]
     F7x14,
 }
 
@@ -65,7 +60,8 @@ impl Font {
     }
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+/// Horizontal alignment of a line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Align {
     Left,
     Center,

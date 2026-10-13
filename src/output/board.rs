@@ -20,24 +20,15 @@ pub(crate) const OVERRUN_FACTOR: u32 = 2;
 
 /// How to reach the adapter board. Shared by the panel output and
 /// `debug pi`.
-#[derive(clap::Args, Debug)]
-pub struct BoardArgs {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardConfig {
     /// GPIO character device of the Pi's header pins.
-    #[arg(long, value_name = "PATH", default_value = "/dev/gpiochip0")]
     pub chip: PathBuf,
-
-    /// Length of the COL-SEL pulse that flips one dot, in microseconds.
-    #[arg(long, value_name = "MICROSECONDS", default_value_t = 190,
-          value_parser = clap::value_parser!(u32).range(1..=25_000))]
-    pub pulse_us: u32,
+    /// Length of the COL-SEL pulse that flips one dot.
+    pub pulse: Duration,
 }
 
-impl BoardArgs {
-    /// Length of a pulse.
-    pub(crate) fn pulse(&self) -> Duration {
-        Duration::from_micros(self.pulse_us.into())
-    }
-
+impl BoardConfig {
     /// Take the pins of the board. The calling thread gets real-time
     /// priority where the system allows it, because it is the one that
     /// times the pulses. Returns the board and, in words, the priority.
@@ -48,7 +39,7 @@ impl BoardArgs {
         } else {
             "normal priority, pulses may run long (run as root for real-time priority)"
         };
-        Ok((Board::new(pins, self.pulse())?, priority))
+        Ok((Board::new(pins, self.pulse)?, priority))
     }
 }
 

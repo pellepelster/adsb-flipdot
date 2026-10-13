@@ -10,98 +10,13 @@ use std::time::{Duration, Instant};
 
 use rs1090::decode::TimedMessage;
 
-use crate::cli::parse;
+use crate::domain::registry::{AircraftInfo, Registry};
 use crate::domain::tracker::Tracker;
-use crate::source::aircraft_db::{AircraftInfo, DbArgs, Lookup};
 
 /// Mean Earth radius in kilometres.
 const EARTH_RADIUS_KM: f64 = 6371.0088;
 /// How long the underlying aircraft tracker keeps a silent aircraft.
 const TRACKER_EXPIRE: Duration = Duration::from_secs(60);
-
-/// Which aircraft to select. Shared by `debug filter` and `run`.
-#[derive(clap::Args, Debug)]
-pub struct FilterParams {
-    /// Latitude of the point of interest, in degrees.
-    #[arg(long, default_value_t = 53.7271256, allow_negative_numbers = true,
-          value_parser = parse_latitude)]
-    pub lat: f64,
-
-    /// Longitude of the point of interest, in degrees.
-    #[arg(long, default_value_t = 9.9065838, allow_negative_numbers = true,
-          value_parser = parse_longitude)]
-    pub lon: f64,
-
-    /// Width of the rectangle, across the view direction, in kilometres.
-    #[arg(long, value_name = "KM", default_value_t = 4.0, value_parser = parse::positive)]
-    pub area_width: f64,
-
-    /// Length of the rectangle, along the view direction, in kilometres.
-    #[arg(long, value_name = "KM", default_value_t = 6.0, value_parser = parse::positive)]
-    pub area_length: f64,
-
-    /// How much of the length lies ahead of the point, in percent. 50
-    /// centres the rectangle on the point, 100 puts all of it ahead of you
-    /// and 0 all of it behind you.
-    #[arg(long, value_name = "PERCENT", default_value_t = 80.0, value_parser = parse_percent)]
-    pub area_offset: f64,
-
-    /// Compass direction you look in from the point, in degrees. Two edges
-    /// of the rectangle run parallel to it.
-    #[arg(long, value_name = "DEGREES", default_value_t = 153.0, value_parser = parse_direction)]
-    pub view_direction: f64,
-
-    /// Only aircraft at or below this altitude, in feet.
-    #[arg(
-        long,
-        value_name = "FEET",
-        default_value_t = 5000,
-        allow_negative_numbers = true
-    )]
-    pub max_altitude: i64,
-
-    /// Drop an aircraft after this many seconds without a position report,
-    /// in case its signal is lost while inside the rectangle.
-    #[arg(long, value_name = "SECONDS", default_value_t = 30)]
-    pub expire: u64,
-
-    #[command(flatten)]
-    pub db: DbArgs,
-}
-
-impl FilterParams {
-    pub fn build(&self) -> Filter {
-        Filter::new(
-            (self.lat, self.lon),
-            Area {
-                width_km: self.area_width,
-                length_km: self.area_length,
-                offset_percent: self.area_offset,
-                view_direction_deg: self.view_direction,
-            },
-            self.max_altitude,
-            Duration::from_secs(self.expire),
-        )
-        .with_lookup(self.db.start())
-    }
-}
-
-fn parse_latitude(s: &str) -> Result<f64, String> {
-    parse::number_in(s, -90.0..=90.0)
-}
-
-fn parse_longitude(s: &str) -> Result<f64, String> {
-    parse::number_in(s, -180.0..=180.0)
-}
-
-fn parse_direction(s: &str) -> Result<f64, String> {
-    parse::number_in(s, 0.0..=360.0)
-}
-
-/// A percentage, with or without the sign.
-fn parse_percent(s: &str) -> Result<f64, String> {
-    parse::number_in(s.strip_suffix('%').unwrap_or(s), 0.0..=100.0)
-}
 
 /// The rectangle on the ground that aircraft have to be over.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -207,8 +122,8 @@ pub struct Filter {
     handled: BTreeMap<u32, f64>,
     /// Aircraft that passed since start.
     total_passes: u64,
-    /// Resolves registration and type from the ICAO address.
-    lookup: Lookup,
+    /// Tells registration and type from the ICAO address, if there is one.
+    registry: Option<Box<dyn Registry>>,
 }
 
 impl Filter {
@@ -222,19 +137,22 @@ impl Filter {
             passes: BTreeMap::new(),
             handled: BTreeMap::new(),
             total_passes: 0,
-            lookup: Lookup::disabled(),
+            registry: None,
         }
     }
 
-    /// Resolve aircraft registration and type with `lookup`.
-    pub fn with_lookup(mut self, lookup: Lookup) -> Self {
-        self.lookup = lookup;
+    /// Tell aircraft registration and type with `registry`.
+    pub fn with_registry(mut self, registry: impl Registry + 'static) -> Self {
+        self.registry = Some(Box::new(registry));
         self
     }
 
     /// State of the aircraft database, for status lines.
     pub fn db_status(&self) -> String {
-        self.lookup.status()
+        match &self.registry {
+            Some(registry) => registry.status(),
+            None => "aircraft db off".to_string(),
+        }
     }
 
     /// Aircraft currently inside the rectangle, the one that entered first
@@ -256,10 +174,18 @@ impl Filter {
                     min_distance_km: pass.min_distance_km,
                     fixes: pass.fixes,
                     last_fix: pass.last_fix,
-                    info: self.lookup.get(*icao).unwrap_or_default(),
+                    info: self.info(*icao),
                 }
             })
             .collect()
+    }
+
+    /// What the registry knows about an aircraft.
+    fn info(&self, icao: u32) -> AircraftInfo {
+        self.registry
+            .as_ref()
+            .and_then(|registry| registry.get(icao))
+            .unwrap_or_default()
     }
 
     /// Frames received so far.
@@ -396,9 +322,8 @@ impl Filter {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::domain::tracker::tests::timed;
     use crate::domain::tracker::tests::{IDENT, POS_EVEN, POS_ODD};
-    use crate::source::stream::tests::timed;
-    use crate::tests::try_parse_args;
 
     /// The default point of interest.
     const CENTER: (f64, f64) = (53.7271256, 9.9065838);
@@ -743,7 +668,7 @@ pub(crate) mod tests {
         assert_eq!(flight.groundspeed_kt, Some(151.0));
 
         // With the database the type and registration are resolved.
-        let f = f.with_lookup(Lookup::ready(crate::source::aircraft_db::tests::sample_db()));
+        let f = f.with_registry(crate::domain::registry::tests::sample_db());
         let info = &f.flights()[0].info;
         assert_eq!(info.typecode.as_deref(), Some("A320"));
         assert_eq!(info.registration.as_deref(), Some("G-EZTB"));
@@ -823,10 +748,10 @@ pub(crate) mod tests {
     /// flew south-west straight over the point and was last heard at
     /// `start`.
     pub(crate) fn overflown(start: Instant) -> Filter {
+        use crate::domain::registry::tests::sample_db;
         use crate::domain::tracker::Aircraft;
-        use crate::source::aircraft_db::tests::sample_db;
 
-        let mut f = filter().with_lookup(Lookup::ready(sample_db()));
+        let mut f = filter().with_registry(sample_db());
         // South-west bound, straight over the point.
         for (i, d) in [3.0, 2.0, 1.0, 0.0, -1.0].into_iter().enumerate() {
             let (lat, lon) = offset(d, d);
@@ -853,61 +778,5 @@ pub(crate) mod tests {
             },
         );
         f
-    }
-
-    #[test]
-    fn arguments_have_the_expected_defaults_and_limits() {
-        let parse = |extra: &[&str]| try_parse_args::<FilterParams>(extra);
-
-        let args = parse(&[]).unwrap();
-        assert_eq!((args.lat, args.lon), CENTER);
-        assert_eq!(
-            (
-                args.area_width,
-                args.area_length,
-                args.area_offset,
-                args.view_direction,
-                args.max_altitude,
-                args.expire
-            ),
-            (4.0, 6.0, 80.0, 153.0, 5000, 30)
-        );
-
-        let args = parse(&[
-            "--lat",
-            "-33.9",
-            "--lon",
-            "-151.2",
-            "--area-width",
-            "0.5",
-            "--area-length",
-            "3",
-            "--area-offset",
-            "80%",
-        ])
-        .unwrap();
-        assert_eq!((args.lat, args.lon), (-33.9, -151.2));
-        assert_eq!(
-            (args.area_width, args.area_length, args.area_offset),
-            (0.5, 3.0, 80.0)
-        );
-
-        assert!(parse(&["--lat", "91"]).is_err());
-        assert!(parse(&["--lon", "-181"]).is_err());
-        assert!(parse(&["--area-width", "0"]).is_err());
-        assert!(parse(&["--area-length", "-2"]).is_err());
-        assert!(
-            parse(&["--size", "5"]).is_err(),
-            "split into width and length"
-        );
-        assert_eq!(parse(&["--area-offset", "0"]).unwrap().area_offset, 0.0);
-        assert!(parse(&["--area-offset", "101"]).is_err());
-        assert!(parse(&["--area-offset", "-1"]).is_err());
-        assert_eq!(
-            parse(&["--view-direction", "0"]).unwrap().view_direction,
-            0.0
-        );
-        assert!(parse(&["--view-direction", "361"]).is_err());
-        assert!(parse(&["--view-direction", "-1"]).is_err());
     }
 }

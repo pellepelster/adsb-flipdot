@@ -6,36 +6,15 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{IsTerminal, LineWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
+use crate::cli::RecordArgs;
 use crate::commands::dump::to_json;
 use crate::commands::shutdown::Shutdown;
-use crate::source::stream::{FrameStream, SourceArgs};
-
-#[derive(clap::Args, Debug)]
-pub struct RecordArgs {
-    /// File to write, one JSON object per line.
-    #[arg(value_name = "FILE")]
-    pub output: PathBuf,
-
-    /// Replace the file if it already exists.
-    #[arg(long, conflicts_with = "append")]
-    pub overwrite: bool,
-
-    /// Add to the file if it already exists.
-    #[arg(long)]
-    pub append: bool,
-
-    /// Stop after this many seconds. Without it, record until Ctrl-C.
-    #[arg(long, value_name = "SECONDS")]
-    pub duration: Option<u64>,
-
-    #[command(flatten)]
-    pub source: SourceArgs,
-}
+use crate::source::stream::FrameStream;
 
 /// Open the output file. An existing file is only touched when asked to.
 fn create(path: &Path, overwrite: bool, append: bool) -> Result<File> {
@@ -68,7 +47,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     let mut writer = LineWriter::new(file);
 
     let mut shutdown = Shutdown::listen()?;
-    let mut stream = FrameStream::open(&args.source).await?;
+    let mut stream = FrameStream::open(&args.source.source()).await?;
     eprintln!("adsb-flipdot: {}", stream.description());
     eprintln!("adsb-flipdot: recording to {}", args.output.display());
 
@@ -128,8 +107,9 @@ pub async fn run(args: RecordArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::stream::tests::{TempFile, timed};
-    use crate::tests::parse_args;
+    use crate::cli::tests::parse_args;
+    use crate::domain::tracker::tests::timed;
+    use crate::source::stream::tests::TempFile;
     use std::io::Read;
 
     fn read(path: &Path) -> String {

@@ -7,18 +7,9 @@ use anyhow::Result;
 use ratatui::Frame;
 use rs1090::decode::TimedMessage;
 
+use crate::cli::FilterArgs;
 use crate::commands::tui::{self, Column, View, age_style, opt};
-use crate::domain::filter::{Filter, FilterParams, format_track};
-use crate::source::stream::SourceArgs;
-
-#[derive(clap::Args, Debug)]
-pub struct FilterArgs {
-    #[command(flatten)]
-    pub source: SourceArgs,
-
-    #[command(flatten)]
-    pub params: FilterParams,
-}
+use crate::domain::filter::{Filter, format_track};
 
 const COLUMNS: [Column; 11] = [
     ("ICAO", 6, false),
@@ -100,7 +91,7 @@ impl View for Passing {
 
 pub async fn run(args: FilterArgs) -> Result<()> {
     let mut passing = Passing(args.params.build());
-    tui::run(&args.source, &mut passing).await
+    tui::run(&args.source.source(), &mut passing).await
 }
 
 #[cfg(test)]

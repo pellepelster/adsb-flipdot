@@ -305,7 +305,7 @@ Examples
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::source::aircraft_db::AircraftInfo;
+    use crate::domain::registry::AircraftInfo;
 
     /// A fully known flight.
     pub(crate) fn easyjet() -> Flight {

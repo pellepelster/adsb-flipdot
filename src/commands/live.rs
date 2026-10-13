@@ -6,19 +6,9 @@ use anyhow::Result;
 use ratatui::Frame;
 use rs1090::decode::TimedMessage;
 
+use crate::cli::LiveArgs;
 use crate::commands::tui::{self, Column, View, age_style, opt};
 use crate::domain::tracker::Tracker;
-use crate::source::stream::SourceArgs;
-
-#[derive(clap::Args, Debug)]
-pub struct LiveArgs {
-    #[command(flatten)]
-    pub source: SourceArgs,
-
-    /// Remove an aircraft after this many seconds without a message.
-    #[arg(long, value_name = "SECONDS", default_value_t = 30)]
-    pub expire: u64,
-}
 
 const COLUMNS: [Column; 12] = [
     ("ICAO", 6, false),
@@ -97,15 +87,15 @@ impl View for Tracker {
 
 pub async fn run(args: LiveArgs) -> Result<()> {
     let mut tracker = Tracker::new(Duration::from_secs(args.expire));
-    tui::run(&args.source, &mut tracker).await
+    tui::run(&args.source.source(), &mut tracker).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::tui::tests::screen;
+    use crate::domain::tracker::tests::timed;
     use crate::domain::tracker::tests::{IDENT, VELOCITY};
-    use crate::source::stream::tests::timed;
 
     const SECS_30: Duration = Duration::from_secs(30);
 

@@ -1,10 +1,10 @@
 //! `debug flipdot`: render UTF-8 text as dots, the way the flipdot panel will
 //! show it.
 //!
-//! [`DisplayArgs`] describes the display and how text is set on it, for
-//! this command and for `run`. The text is laid out by [`Scene`], and every
-//! frame reaches the terminal preview through the same [`Display`] as the
-//! hardware driver, so both show exactly the same dots.
+//! The text is laid out as a [`Scene`](crate::domain::scene::Scene), and
+//! every frame reaches the terminal preview through the same
+//! [`Display`](crate::output::Display) as the panels, so both show exactly
+//! the same dots.
 
 use std::io::{BufRead, IsTerminal};
 use std::sync::Arc;
@@ -12,134 +12,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
+use crate::cli::FlipdotArgs;
 use crate::commands::shutdown::Shutdown;
-use crate::domain::scene::{Align, Font, Scroll, Typesetting};
-use crate::output::board::MAX_COLUMNS;
-use crate::output::panel::{Arrangement, Layout, Panel, PanelArgs};
-use crate::output::terminal::{Stacking, Terminal};
-use crate::output::{Display, Note};
+use crate::output::Note;
+use crate::output::terminal::Stacking;
 
-/// Size of one real panel in dots: as wide as the board can address, two
-/// rows short of it.
-pub const PANEL_WIDTH: u32 = MAX_COLUMNS;
-pub const PANEL_HEIGHT: u32 = 14;
-/// Number of panels the display is built from.
-pub const PANELS: u32 = 2;
 /// How often a wait for the next text looks whether the program should end.
 const STOP_POLL: Duration = Duration::from_millis(50);
-
-#[derive(clap::Args, Debug)]
-pub struct FlipdotArgs {
-    /// Text to show. Each argument is one line; `\n` inside an argument also
-    /// starts a new line. Without any text, lines are read from stdin and
-    /// each one is rendered as its own frame.
-    pub text: Vec<String>,
-
-    #[command(flatten)]
-    pub display: DisplayArgs,
-}
-
-/// The display and how text is set on it. Shared by `debug flipdot` and
-/// `run`.
-#[derive(clap::Args, Debug)]
-pub struct DisplayArgs {
-    /// Font, named by the size of one character cell in dots.
-    #[arg(long, value_enum, default_value_t = Font::F5x7)]
-    pub font: Font,
-
-    /// Horizontal alignment of every line.
-    #[arg(long, value_enum, default_value_t = Align::Left)]
-    pub align: Align,
-
-    /// Number of panels the display is built from.
-    #[arg(long, default_value_t = PANELS, value_parser = clap::value_parser!(u32).range(1..=16))]
-    pub panels: u32,
-
-    /// How the panels are mounted.
-    #[arg(long, value_enum, default_value_t = Layout::Row)]
-    pub layout: Layout,
-
-    /// Width of one panel in dots.
-    #[arg(long, default_value_t = PANEL_WIDTH, value_parser = clap::value_parser!(u32).range(1..=256))]
-    pub width: u32,
-
-    /// Height of one panel in dots.
-    #[arg(long, default_value_t = PANEL_HEIGHT, value_parser = clap::value_parser!(u32).range(1..=256))]
-    pub height: u32,
-
-    /// Which lines scroll.
-    #[arg(long, value_enum, default_value_t = Scroll::Auto)]
-    pub scroll: Scroll,
-
-    /// Scroll speed, in dots per second.
-    #[arg(long, value_name = "DOTS_PER_SECOND", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=60))]
-    pub speed: u32,
-
-    #[command(flatten)]
-    pub panel: PanelArgs,
-}
-
-impl DisplayArgs {
-    /// The panels the display is built from.
-    fn arrangement(&self) -> Arrangement {
-        Arrangement {
-            panels: self.panels,
-            width: self.width,
-            height: self.height,
-            layout: self.layout,
-        }
-    }
-
-    /// Size of the whole display in dots.
-    pub fn display_size(&self) -> (u32, u32) {
-        self.arrangement().display_size()
-    }
-
-    /// Time between two frames of a scrolling line.
-    pub fn frame_time(&self) -> Duration {
-        Duration::from_secs_f64(1.0 / f64::from(self.speed))
-    }
-
-    /// Fail if the font cannot fit on the display at all.
-    pub fn check(&self) -> Result<()> {
-        let (cell_width, cell_height) = self.font.cell_size();
-        let (_, height) = self.display_size();
-        if cell_height > height {
-            bail!("font {cell_width}x{cell_height} is taller than the {height} dot high display");
-        }
-        Ok(())
-    }
-
-    /// The display with its outputs: the preview in the terminal and, with
-    /// `--gpio`, the panels. Opening the panels gives the calling thread
-    /// real-time priority, which threads started afterwards inherit.
-    pub fn open(&self, stacking: Stacking) -> Result<Display> {
-        let (width, height) = self.display_size();
-        let mut display = Display::new(width, height);
-        // The panels first: the terminal then shows only what they did.
-        if self.panel.gpio {
-            display.attach(Panel::open(self.arrangement(), &self.panel)?);
-        }
-        display.attach(Terminal::stdout(width, height, stacking));
-        Ok(display)
-    }
-
-    /// How text is set on this display.
-    pub fn typesetting(&self) -> Typesetting {
-        let (width, height) = self.display_size();
-        Typesetting {
-            width,
-            height,
-            font: self.font,
-            align: self.align,
-            scroll: self.scroll,
-            // Rest for one second before each pass so the start is readable.
-            hold: self.speed,
-        }
-    }
-}
 
 /// Split arguments into display lines. `\n`, typed literally or as a real
 /// newline, starts a new line.
@@ -216,7 +97,7 @@ impl Input {
 pub fn run(args: FlipdotArgs) -> Result<()> {
     args.display.check()?;
     // Animation needs a terminal to redraw in place, or the panels.
-    let animate = std::io::stdout().is_terminal() || args.display.panel.gpio;
+    let animate = std::io::stdout().is_terminal() || args.display.drives_panels();
     let frame_time = args.display.frame_time();
     let typesetting = args.display.typesetting();
     let stop = stop_on_signals()?;
@@ -301,11 +182,6 @@ pub fn run(args: FlipdotArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::parse_args;
-
-    fn args(extra: &[&str]) -> DisplayArgs {
-        parse_args(extra)
-    }
 
     #[test]
     fn arguments_and_escaped_newlines_become_lines() {
@@ -315,35 +191,5 @@ mod tests {
             "c\nd".to_string(),
         ];
         assert_eq!(split_lines(&args), ["SAS51B", "a", "b", "c", "d"]);
-    }
-
-    #[test]
-    fn display_size_follows_panels_and_layout() {
-        assert_eq!(
-            args(&[]).display_size(),
-            (56, 14),
-            "default: 2 panels in a row"
-        );
-        assert_eq!(args(&["--panels", "1"]).display_size(), (28, 14));
-        assert_eq!(args(&["--panels", "4"]).display_size(), (112, 14));
-        assert_eq!(args(&["--layout", "column"]).display_size(), (28, 28));
-        assert_eq!(
-            args(&[
-                "--panels", "3", "--layout", "column", "--width", "20", "--height", "10"
-            ])
-            .display_size(),
-            (20, 30)
-        );
-    }
-
-    #[test]
-    fn a_font_taller_than_the_display_is_refused() {
-        assert!(args(&[]).check().is_ok());
-        assert!(args(&["--font", "7x14", "--height", "14"]).check().is_ok());
-        let error = args(&["--font", "7x14", "--height", "10"])
-            .check()
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("7x14 is taller than the 10 dot"), "{error}");
     }
 }

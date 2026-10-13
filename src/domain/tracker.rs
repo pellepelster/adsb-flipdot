@@ -136,7 +136,22 @@ impl Tracker {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::source::stream::tests::timed;
+
+    /// The bytes of a frame given in hex.
+    pub(crate) fn frame(hex_str: &str) -> Vec<u8> {
+        hex::decode(hex_str).unwrap()
+    }
+
+    /// A frame received at `timestamp`, as the frame stream hands it on.
+    pub(crate) fn timed(hex_str: &str, timestamp: f64) -> TimedMessage {
+        TimedMessage {
+            timestamp,
+            frame: frame(hex_str),
+            message: None,
+            metadata: vec![],
+            decode_time: None,
+        }
+    }
 
     // Reference frames from "The 1090 Megahertz Riddle" (Junzi Sun).
     pub(crate) const IDENT: &str = "8d4840d6202cc371c32ce0576098"; // 4840d6, KLM1023

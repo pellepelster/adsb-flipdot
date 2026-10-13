@@ -14,7 +14,7 @@ use ratatui::{DefaultTerminal, Frame};
 use rs1090::decode::TimedMessage;
 
 use crate::commands::shutdown::Shutdown;
-use crate::source::stream::{FrameStream, SourceArgs};
+use crate::source::stream::{FrameStream, Source};
 
 /// How often the screen is checked for redraw.
 const TICK: Duration = Duration::from_millis(200);
@@ -201,7 +201,7 @@ fn scroll_by(key: KeyCode, scroll: &mut usize) -> bool {
 
 /// Open the frame source and show `view` until the user quits or the source
 /// ends.
-pub async fn run(source: &SourceArgs, view: &mut impl View) -> Result<()> {
+pub async fn run(source: &Source, view: &mut impl View) -> Result<()> {
     let mut shutdown = Shutdown::listen()?;
     let mut stream = FrameStream::open(source).await?;
     let status = stream.description().to_string();

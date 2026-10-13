@@ -1,35 +1,15 @@
 //! `debug dump`: print every received frame until Ctrl-C or end of file.
 
 use anyhow::Result;
-use clap::ValueEnum;
 use rs1090::decode::{Message, TimedMessage};
 
+use crate::cli::{DumpArgs, Format};
 use crate::commands::shutdown::Shutdown;
-use crate::source::stream::{FrameStream, SourceArgs};
-
-#[derive(clap::Args, Debug)]
-pub struct DumpArgs {
-    #[command(flatten)]
-    pub source: SourceArgs,
-
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = Format::Text)]
-    pub format: Format,
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format {
-    /// One `*<hex>;` line per frame, as dump1090 emits on port 30002.
-    Raw,
-    /// Human readable decode of every frame.
-    Text,
-    /// One JSON object per line with frame, timestamp, RSSI and decode.
-    Json,
-}
+use crate::source::stream::FrameStream;
 
 pub async fn run(args: DumpArgs) -> Result<()> {
     let mut shutdown = Shutdown::listen()?;
-    let mut stream = FrameStream::open(&args.source).await?;
+    let mut stream = FrameStream::open(&args.source.source()).await?;
     eprintln!("adsb-flipdot: {}", stream.description());
 
     let mut count: u64 = 0;
@@ -91,7 +71,7 @@ fn print_message(msg: TimedMessage, format: Format) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::stream::tests::frame;
+    use crate::domain::tracker::tests::frame;
 
     #[test]
     fn long_frame_decodes() {

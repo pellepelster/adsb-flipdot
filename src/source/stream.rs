@@ -11,14 +11,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::ValueEnum;
 use desperado::{IqAsyncSource, IqFormat};
 use rs1090::decode::{SensorMetadata, TimedMessage};
 use rs1090::source::iqread;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-
-use crate::cli::parse;
 
 /// ADS-B downlink frequency in Hz.
 const CENTER_FREQ_HZ: u32 = 1_090_000_000;
@@ -34,62 +31,28 @@ const SHORT_FRAME_BYTES: usize = 7;
 /// offsets. A real retransmission is never this close (a frame lasts 120 us).
 const DUPLICATE_WINDOW_S: f64 = 0.001;
 
-/// Options selecting where frames come from. Shared by all subcommands.
-#[derive(clap::Args, Debug)]
-pub struct SourceArgs {
-    /// RTL-SDR device index.
-    #[arg(long, default_value_t = 0)]
-    pub device: usize,
-
-    /// Tuner gain in tenths of a dB (496 = 49.6 dB). Ignored with --agc.
-    #[arg(long, default_value_t = 496)]
-    pub gain: i32,
-
-    /// Use the tuner's automatic gain control instead of a fixed gain.
-    #[arg(long)]
-    pub agc: bool,
-
-    /// Replay a recorded IQ file (2.4 MS/s) instead of opening the dongle.
-    #[arg(long, value_name = "PATH")]
-    pub file: Option<PathBuf>,
-
-    /// Sample format of the IQ file given with --file.
-    #[arg(long, value_enum, default_value_t = IqFileFormat::Cu8)]
-    pub iq_format: IqFileFormat,
-
-    /// Replay frames recorded with `debug record` instead of opening the
-    /// dongle. Frames arrive with the timing they were recorded with.
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["device", "file"])]
-    pub device_record_file: Option<PathBuf>,
-
-    /// Replay the recording this many times faster than it was recorded.
-    #[arg(long, value_name = "FACTOR", default_value_t = 1.0,
-          value_parser = parse::positive, requires = "device_record_file")]
-    pub device_record_speed: f64,
-
-    /// Start the recording over when it ends, instead of stopping.
-    #[arg(long, requires = "device_record_file")]
-    pub device_record_loop: bool,
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug)]
-pub enum IqFileFormat {
-    /// Unsigned 8-bit I/Q pairs (what rtl_sdr writes).
-    Cu8,
-    /// Signed 8-bit I/Q pairs.
-    Cs8,
-    /// Signed 16-bit little-endian I/Q pairs.
-    Cs16,
-}
-
-impl From<IqFileFormat> for IqFormat {
-    fn from(f: IqFileFormat) -> Self {
-        match f {
-            IqFileFormat::Cu8 => IqFormat::Cu8,
-            IqFileFormat::Cs8 => IqFormat::Cs8,
-            IqFileFormat::Cs16 => IqFormat::Cs16,
-        }
-    }
+/// Where frames come from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Source {
+    /// An RTL-SDR dongle.
+    Dongle {
+        /// Device index.
+        device: usize,
+        /// Tuner gain in tenths of a dB, `None` for the tuner's automatic
+        /// gain control.
+        gain: Option<i32>,
+    },
+    /// A recorded IQ file at 2.4 MS/s.
+    IqFile { path: PathBuf, format: IqFormat },
+    /// Frames recorded with `debug record`, arriving with the timing they
+    /// were recorded with.
+    Recording {
+        path: PathBuf,
+        /// How many times faster than recorded the frames arrive.
+        speed: f64,
+        /// Start over when the recording ends.
+        looping: bool,
+    },
 }
 
 /// A running receiver yielding de-duplicated frames cut to their real length.
@@ -104,13 +67,34 @@ pub struct FrameStream {
 
 impl FrameStream {
     /// Open the source and start demodulating on a background task.
-    pub async fn open(args: &SourceArgs) -> Result<Self> {
+    pub async fn open(source: &Source) -> Result<Self> {
         let (tx, rx) = mpsc::channel::<TimedMessage>(1024);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let live = args.device_record_file.is_none() && args.file.is_none();
-        let (handle, description) = match &args.device_record_file {
-            Some(path) => start_replay(args, path, tx, shutdown_rx)?,
-            None => start_receiver(args, live, tx, shutdown_rx).await?,
+        let live = matches!(source, Source::Dongle { .. });
+        let (handle, description) = match source {
+            Source::Recording {
+                path,
+                speed,
+                looping,
+            } => start_replay(path, *speed, *looping, tx, shutdown_rx)?,
+            Source::IqFile { path, format } => {
+                let iq = open_iq_file(path, *format).await?;
+                let description = format!("replaying {}", path.display());
+                (start_receiver(iq, live, tx, shutdown_rx), description)
+            }
+            Source::Dongle { device, gain } => {
+                let iq = open_dongle(*device, *gain).await?;
+                let description = format!(
+                    "{:.3} MHz at {:.1} MS/s, gain {}",
+                    CENTER_FREQ_HZ as f64 / 1e6,
+                    SAMPLE_RATE_HZ as f64 / 1e6,
+                    match gain {
+                        Some(gain) => format!("{:.1} dB", f64::from(*gain) / 10.0),
+                        None => "auto".to_string(),
+                    }
+                );
+                (start_receiver(iq, live, tx, shutdown_rx), description)
+            }
         };
         Ok(Self {
             rx,
@@ -153,35 +137,31 @@ impl FrameStream {
     }
 }
 
-/// The background task that feeds the frames, and a description of where
-/// they come from.
-type Started = (JoinHandle<Result<(), desperado::Error>>, String);
+/// The background task that feeds the frames.
+type Feeder = JoinHandle<Result<(), desperado::Error>>;
 
 /// Replay the recording at `path` until it ends or `shutdown` changes.
+/// Returns the task and a description of the recording.
 fn start_replay(
-    args: &SourceArgs,
     path: &Path,
+    speed: f64,
+    looping: bool,
     tx: mpsc::Sender<TimedMessage>,
     mut shutdown: watch::Receiver<bool>,
-) -> Result<Started> {
+) -> Result<(Feeder, String)> {
     let frames = read_recording(path)?;
     let description = format!(
         "replaying {} ({} frames, {:.0} s{}{})",
         path.display(),
         frames.len(),
         recording_span(&frames),
-        if args.device_record_speed == 1.0 {
+        if speed == 1.0 {
             String::new()
         } else {
-            format!(", {}x speed", args.device_record_speed)
+            format!(", {speed}x speed")
         },
-        if args.device_record_loop {
-            ", looping"
-        } else {
-            ""
-        },
+        if looping { ", looping" } else { "" },
     );
-    let (speed, looping) = (args.device_record_speed, args.device_record_loop);
     let handle = tokio::spawn(async move {
         tokio::select! {
             _ = replay(tx, frames, speed, looping) => {}
@@ -192,67 +172,48 @@ fn start_replay(
     Ok((handle, description))
 }
 
-/// Demodulate the dongle, or an IQ file if `live` is false, until the source
-/// ends or `shutdown` changes.
-async fn start_receiver(
-    args: &SourceArgs,
+/// Demodulate `iq` until it ends or `shutdown` changes. `live` says that it
+/// is a dongle, which has to be stopped afterwards.
+fn start_receiver(
+    mut iq: IqAsyncSource,
     live: bool,
     tx: mpsc::Sender<TimedMessage>,
     mut shutdown: watch::Receiver<bool>,
-) -> Result<Started> {
-    let mut source = open_source(args).await?;
-
-    // `receiver` borrows `source` only while it runs, so after the select
-    // the SDR can still be stopped.
-    let handle = tokio::spawn(async move {
+) -> Feeder {
+    // `receiver` borrows `iq` only while it runs, so after the select the
+    // SDR can still be stopped.
+    tokio::spawn(async move {
         let result = tokio::select! {
-            r = iqread::receiver(tx, &mut source, 0, SAMPLE_RATE_HZ as f64, None) => r,
+            r = iqread::receiver(tx, &mut iq, 0, SAMPLE_RATE_HZ as f64, None) => r,
             _ = shutdown.changed() => Ok(()),
         };
         if live {
             // Tear down USB transfers deterministically before exit.
-            let _ = tokio::time::timeout(Duration::from_secs(2), source.stop()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), iq.stop()).await;
         }
         result
-    });
-
-    let description = match &args.file {
-        Some(path) => format!("replaying {}", path.display()),
-        None => format!(
-            "{:.3} MHz at {:.1} MS/s, gain {}",
-            CENTER_FREQ_HZ as f64 / 1e6,
-            SAMPLE_RATE_HZ as f64 / 1e6,
-            if args.agc {
-                "auto".to_string()
-            } else {
-                format!("{:.1} dB", args.gain as f64 / 10.0)
-            }
-        ),
-    };
-    Ok((handle, description))
+    })
 }
 
-async fn open_source(args: &SourceArgs) -> Result<IqAsyncSource> {
-    match &args.file {
-        Some(path) => IqAsyncSource::from_file(
-            path,
-            CENTER_FREQ_HZ,
-            SAMPLE_RATE_HZ,
-            FILE_CHUNK_SAMPLES,
-            args.iq_format.into(),
-        )
+async fn open_iq_file(path: &Path, format: IqFormat) -> Result<IqAsyncSource> {
+    IqAsyncSource::from_file(
+        path,
+        CENTER_FREQ_HZ,
+        SAMPLE_RATE_HZ,
+        FILE_CHUNK_SAMPLES,
+        format,
+    )
+    .await
+    .with_context(|| format!("cannot open IQ file {}", path.display()))
+}
+
+async fn open_dongle(device: usize, gain: Option<i32>) -> Result<IqAsyncSource> {
+    IqAsyncSource::from_rtlsdr(device, CENTER_FREQ_HZ, SAMPLE_RATE_HZ, gain)
         .await
-        .with_context(|| format!("cannot open IQ file {}", path.display())),
-        None => {
-            let gain = if args.agc { None } else { Some(args.gain) };
-            IqAsyncSource::from_rtlsdr(args.device, CENTER_FREQ_HZ, SAMPLE_RATE_HZ, gain)
-                .await
-                .map_err(|e| {
-                    let connected = desperado::rtlsdr::list_devices().ok().map(|d| d.len());
-                    anyhow::anyhow!(device_error(args.device, connected, &e.to_string()))
-                })
-        }
-    }
+        .map_err(|e| {
+            let connected = desperado::rtlsdr::list_devices().ok().map(|d| d.len());
+            anyhow::anyhow!(device_error(device, connected, &e.to_string()))
+        })
 }
 
 /// Explain why the dongle could not be opened. `connected` is the number of
@@ -409,27 +370,16 @@ fn is_duplicate(last: &Option<(Vec<u8>, f64)>, msg: &TimedMessage) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::tests::{parse_args, try_parse_args};
+    use crate::domain::tracker::tests::{frame, timed};
     use rs1090::decode::Message;
 
-    pub(crate) fn frame(hex_str: &str) -> Vec<u8> {
-        hex::decode(hex_str).unwrap()
-    }
-
-    pub(crate) fn timed(hex_str: &str, timestamp: f64) -> TimedMessage {
-        TimedMessage {
-            timestamp,
-            frame: frame(hex_str),
-            message: None,
-            metadata: vec![],
-            decode_time: None,
+    /// A recording at `path` as the source.
+    fn recording(path: &Path, speed: f64, looping: bool) -> Source {
+        Source::Recording {
+            path: path.to_path_buf(),
+            speed,
+            looping,
         }
-    }
-
-    /// A source that replays `path`.
-    fn replay_args(path: &Path, extra: &[&str]) -> SourceArgs {
-        let path = path.to_str().unwrap();
-        parse_args(&[&["--device-record-file", path], extra].concat())
     }
 
     /// A file under the system temp dir, removed when dropped.
@@ -508,7 +458,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn recording_replays_all_frames_then_ends() {
         let file = TempFile::new("replay", &format!("{LINE_LONG}\n{LINE_SHORT}\n"));
-        let args = replay_args(&file.0, &["--device-record-speed", "100"]);
+        let args = recording(&file.0, 100.0, false);
         let mut stream = FrameStream::open(&args).await.unwrap();
         assert!(
             stream.description().contains("2 frames"),
@@ -542,8 +492,8 @@ pub(crate) mod tests {
             .collect();
         let file = TempFile::new("spacing", &lines);
 
-        for (speed, expected) in [("1", [0.0, 2.0, 7.0]), ("2", [0.0, 1.0, 3.5])] {
-            let args = replay_args(&file.0, &["--device-record-speed", speed]);
+        for (speed, expected) in [(1.0, [0.0, 2.0, 7.0]), (2.0, [0.0, 1.0, 3.5])] {
+            let args = recording(&file.0, speed, false);
             let mut stream = FrameStream::open(&args).await.unwrap();
             let started = tokio::time::Instant::now();
             for delay in expected {
@@ -566,7 +516,7 @@ pub(crate) mod tests {
             r#"{"timestamp":14.0,"frame":"5d4ca4ab3b2f5c"}"#
         );
         let file = TempFile::new("loop", &lines);
-        let args = replay_args(&file.0, &["--device-record-loop"]);
+        let args = recording(&file.0, 1.0, true);
         let mut stream = FrameStream::open(&args).await.unwrap();
         assert!(stream.description().contains("looping"));
 
@@ -589,23 +539,6 @@ pub(crate) mod tests {
             ]
         );
         stream.close().await.unwrap();
-    }
-
-    #[test]
-    fn record_file_excludes_device_and_iq_file() {
-        let parse = |extra: &[&str]| try_parse_args::<SourceArgs>(extra);
-        assert!(parse(&["--device-record-file", "a.jsonl"]).is_ok());
-        assert!(parse(&["--device-record-file", "a.jsonl", "--device", "1"]).is_err());
-        assert!(parse(&["--device-record-file", "a.jsonl", "--file", "iq.bin"]).is_err());
-        assert!(
-            parse(&["--device-record-speed", "2"]).is_err(),
-            "needs a recording"
-        );
-        assert!(
-            parse(&["--device-record-loop"]).is_err(),
-            "needs a recording"
-        );
-        assert!(parse(&["--device-record-file", "a", "--device-record-speed", "0"]).is_err());
     }
 
     #[test]

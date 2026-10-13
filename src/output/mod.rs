@@ -12,6 +12,8 @@ pub mod terminal;
 use anyhow::Result;
 
 use crate::domain::dots::{Flip, FrameBuffer, Shown};
+use crate::output::panel::{Arrangement, Panel, PanelConfig};
+use crate::output::terminal::{Stacking, Terminal};
 
 /// What a frame is about, for outputs that show more than dots.
 #[derive(Debug, Clone, Copy, Default)]
@@ -46,6 +48,25 @@ impl Display {
             shown: Shown::new(width, height),
             outputs: Vec::new(),
         }
+    }
+
+    /// The display with its outputs: the preview in the terminal and, if
+    /// `panels` says how they are wired, the panels. Opening the panels
+    /// gives the calling thread real-time priority, which threads started
+    /// afterwards inherit.
+    pub fn open(
+        arrangement: Arrangement,
+        panels: Option<&PanelConfig>,
+        stacking: Stacking,
+    ) -> Result<Self> {
+        let (width, height) = arrangement.display_size();
+        let mut display = Self::new(width, height);
+        // The panels first: the terminal then shows only what they did.
+        if let Some(config) = panels {
+            display.attach(Panel::open(arrangement, config)?);
+        }
+        display.attach(Terminal::stdout(width, height, stacking));
+        Ok(display)
     }
 
     /// Add an output. It gets every flip from now on.

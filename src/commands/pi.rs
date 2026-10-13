@@ -12,22 +12,13 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Row, Table};
 
+use crate::cli::PiArgs;
 use crate::commands::shutdown::Shutdown;
 use crate::commands::tui::{Column, Input, Screen, cell};
 use crate::output::board::{
-    Board, BoardArgs, COL_ADDRESS, MAX_COLUMNS, MAX_ROWS, NoPins, OVERRUN_FACTOR, Pins,
-    ROW_ADDRESS, SIGNALS, line_number, micros,
+    Board, COL_ADDRESS, MAX_COLUMNS, MAX_ROWS, NoPins, OVERRUN_FACTOR, Pins, ROW_ADDRESS, SIGNALS,
+    line_number, micros,
 };
-
-#[derive(clap::Args, Debug)]
-pub struct PiArgs {
-    #[command(flatten)]
-    pub board: BoardArgs,
-
-    /// Touch no pin, to try the interface away from the Pi.
-    #[arg(long)]
-    pub dry_run: bool,
-}
 
 fn describe_address(what: &str, address: u8, max: u32) -> String {
     match line_number(address).filter(|line| u32::from(*line) <= max) {
@@ -172,15 +163,15 @@ async fn show<P: Pins>(mut board: Board<P>, status: &str) -> Result<()> {
 }
 
 pub async fn run(args: PiArgs) -> Result<()> {
+    let config = args.board.config();
     if args.dry_run {
-        let board = Board::new(NoPins, args.board.pulse())?;
+        let board = Board::new(NoPins, config.pulse)?;
         return show(board, "dry run, no pin is touched").await;
     }
-    let (board, priority) = args
-        .board
+    let (board, priority) = config
         .open()
         .context("cannot use the adapter board (--dry-run needs no pins)")?;
-    let status = format!("{} | {priority}", args.board.chip.display());
+    let status = format!("{} | {priority}", config.chip.display());
     show(board, &status).await
 }
 

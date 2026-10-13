@@ -8,39 +8,14 @@ use std::time::Instant;
 
 use anyhow::Result;
 
-use crate::commands::flipdot::DisplayArgs;
+use crate::cli::RunArgs;
 use crate::commands::shutdown::Shutdown;
-use crate::domain::filter::{Filter, FilterParams, Flight, format_track};
+use crate::domain::filter::{Filter, Flight, format_track};
 use crate::domain::presenter::Presenter;
-use crate::domain::template::{Template, default_templates};
+use crate::domain::template::default_templates;
 use crate::output::Note;
 use crate::output::terminal::Stacking;
-use crate::source::stream::{FrameStream, SourceArgs};
-
-#[derive(clap::Args, Debug)]
-pub struct RunArgs {
-    #[command(flatten)]
-    pub source: SourceArgs,
-
-    #[command(flatten)]
-    pub filter: FilterParams,
-
-    #[command(flatten)]
-    pub display: DisplayArgs,
-
-    /// Text to show per aircraft, with placeholders such as
-    /// `{{ callsign }} {{ aircraft code }} {{ track }}`. `\n` starts a second
-    /// line. Repeat the option to alternate between several pages. Run
-    /// `adsb-flipdot template-codes` for all codes.
-    #[arg(long = "template", value_name = "TEMPLATE", value_parser = Template::parse)]
-    pub templates: Vec<Template>,
-
-    /// Show each page for this many seconds. A scrolling page always
-    /// finishes its pass, so it may stay longer.
-    #[arg(long, value_name = "SECONDS", default_value_t = 3,
-          value_parser = clap::value_parser!(u64).range(1..=3600))]
-    pub page: u64,
-}
+use crate::source::stream::FrameStream;
 
 /// One line of plain text under the simulated display with the full details.
 fn status_line(filter: &Filter, flights: &[Flight], shown: Option<usize>) -> String {
@@ -83,11 +58,10 @@ pub async fn run(args: RunArgs) -> Result<()> {
     } else {
         args.templates
     };
-    // One tick moves a scrolling line by one dot.
-    let mut presenter = Presenter::new(templates, args.page * u64::from(args.display.speed));
+    let mut presenter = Presenter::new(templates, args.display.ticks(args.page));
     let typesetting = args.display.typesetting();
     let mut filter = args.filter.build();
-    let mut stream = FrameStream::open(&args.source).await?;
+    let mut stream = FrameStream::open(&args.source.source()).await?;
     eprintln!("adsb-flipdot: {}", stream.description());
 
     // The simulated display in the terminal, dots plus a status line, and
