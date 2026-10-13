@@ -19,6 +19,8 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 embedded-graphics = "0.8.2"
 ureq = "3.4.2"
 flate2 = "1.1.10"
+gpiocdev = "0.8.0"
+libc = "0.2.190"
 
 [dev-dependencies]
 # Lets tests run timers on a paused clock instead of waiting in real time.

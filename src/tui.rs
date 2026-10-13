@@ -156,7 +156,7 @@ fn handle_event(event: &Event, scroll: &mut usize) -> Action {
 }
 
 /// Restores the terminal when dropped, also when `run` returns an error.
-struct TerminalGuard;
+pub(crate) struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
@@ -234,13 +234,16 @@ pub(crate) mod tests {
         width: u16,
         height: u16,
     ) -> Vec<String> {
+        render(width, height, |frame| view.draw(frame, scroll, "test", now))
+    }
+
+    /// Draw into an in-memory terminal and return its text lines.
+    pub(crate) fn render(width: u16, height: u16, draw: impl FnOnce(&mut Frame)) -> Vec<String> {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| view.draw(frame, scroll, "test", now))
-            .unwrap();
+        terminal.draw(draw).unwrap();
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
             .map(|y| {

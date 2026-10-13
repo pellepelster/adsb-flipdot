@@ -5,6 +5,7 @@ mod dump;
 mod filter;
 mod flipdot;
 mod live;
+mod pi;
 mod record;
 mod run;
 mod source;
@@ -49,6 +50,8 @@ enum DebugCommand {
     Filter(filter::FilterArgs),
     /// Preview text as dots, the way the flipdot panel will show it.
     Flipdot(flipdot::FlipdotArgs),
+    /// Switch the signals of the adapter board on the Raspberry Pi by hand.
+    Pi(pi::PiArgs),
 }
 
 #[tokio::main]
@@ -77,6 +80,7 @@ async fn run(command: Command) -> Result<()> {
             DebugCommand::Live(args) => live::run(args).await,
             DebugCommand::Filter(args) => filter::run(args).await,
             DebugCommand::Flipdot(args) => flipdot::run(args),
+            DebugCommand::Pi(args) => pi::run(args).await,
         },
     }
 }
@@ -128,6 +132,32 @@ mod tests {
         let display = &args.display;
         assert_eq!((display.width, display.height, display.panels), (28, 14, 2));
         assert_eq!(display.display_size(), (56, 14));
+    }
+
+    #[test]
+    fn debug_pi_parses() {
+        let parse = |extra: &[&str]| {
+            Cli::try_parse_from(["adsb-flipdot", "debug", "pi"].iter().chain(extra))
+        };
+        let Command::Debug {
+            command: DebugCommand::Pi(args),
+        } = parse(&[]).unwrap().command
+        else {
+            panic!("expected debug pi");
+        };
+        assert_eq!(args.chip, std::path::PathBuf::from("/dev/gpiochip0"));
+        assert_eq!((args.pulse_us, args.dry_run), (190, false));
+
+        let Command::Debug {
+            command: DebugCommand::Pi(args),
+        } = parse(&["--dry-run", "--pulse-us", "1000"]).unwrap().command
+        else {
+            panic!("expected debug pi");
+        };
+        assert_eq!((args.pulse_us, args.dry_run), (1000, true));
+
+        assert!(parse(&["--pulse-us", "0"]).is_err());
+        assert!(parse(&["--pulse-us", "25001"]).is_err(), "above 25 ms");
     }
 
     #[test]
