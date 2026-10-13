@@ -15,12 +15,12 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Cell, Row, Table};
-use tokio::signal::unix::{SignalKind, signal};
 
 use crate::board::{
     Board, COL_ADDRESS, GpioPins, MAX_COLUMNS, MAX_ROWS, NoPins, OVERRUN_FACTOR, Pins, ROW_ADDRESS,
     SIGNALS, enable_realtime, line_number, micros,
 };
+use crate::shutdown::Shutdown;
 use crate::tui::TerminalGuard;
 
 #[derive(clap::Args, Debug)]
@@ -167,6 +167,7 @@ fn draw<P: Pins>(frame: &mut Frame, board: &Board<P>, selected: usize, status: &
 
 /// Show the board until the user quits. Every line is low afterwards.
 async fn show<P: Pins>(mut board: Board<P>, status: &str) -> Result<()> {
+    let mut shutdown = Shutdown::listen()?;
     // `try_init` enters raw mode and the alternate screen, and installs a
     // panic hook that restores the terminal.
     let mut terminal =
@@ -174,9 +175,6 @@ async fn show<P: Pins>(mut board: Board<P>, status: &str) -> Result<()> {
     let guard = TerminalGuard;
 
     let mut events = EventStream::new();
-    let sigint = tokio::signal::ctrl_c();
-    tokio::pin!(sigint);
-    let mut sigterm = signal(SignalKind::terminate()).context("cannot listen for SIGTERM")?;
 
     let mut selected = 0usize;
     loop {
@@ -185,8 +183,7 @@ async fn show<P: Pins>(mut board: Board<P>, status: &str) -> Result<()> {
             .context("cannot draw to the terminal")?;
         tokio::select! {
             // Signals sent from outside, e.g. `kill`.
-            _ = &mut sigint => break,
-            _ = sigterm.recv() => break,
+            _ = shutdown.recv() => break,
             event = events.next() => match event {
                 Some(Ok(event)) => match handle_event(&event) {
                     Action::Quit => break,

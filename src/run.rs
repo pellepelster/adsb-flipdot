@@ -8,13 +8,13 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
-use tokio::signal::unix::{SignalKind, signal};
+use anyhow::Result;
 
 use crate::display::{Note, Stacking};
 use crate::filter::{Filter, FilterParams, Flight, format_track};
 use crate::flipdot::DisplayArgs;
 use crate::scene::{FrameBuffer, Scene};
+use crate::shutdown::Shutdown;
 use crate::source::{FrameStream, SourceArgs};
 use crate::template::{Template, default_templates};
 use crate::tui::View;
@@ -205,6 +205,9 @@ fn status_line(filter: &Filter, flights: &[Flight], shown: Option<usize>) -> Str
 
 pub async fn run(args: RunArgs) -> Result<()> {
     args.display.check()?;
+    // Before the panels are opened: from here on a signal cannot end the
+    // program in the middle of a pulse.
+    let mut shutdown = Shutdown::listen()?;
     let templates = if args.templates.is_empty() {
         default_templates()
     } else {
@@ -226,12 +229,6 @@ pub async fn run(args: RunArgs) -> Result<()> {
             return Err(error);
         }
     };
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
-    // Listened for so that they cannot end the program in the middle of a
-    // pulse, which would leave a coil of the panel energised.
-    let mut sigterm = signal(SignalKind::terminate()).context("cannot listen for SIGTERM")?;
-    let mut sighup = signal(SignalKind::hangup()).context("cannot listen for SIGHUP")?;
     let mut tick = tokio::time::interval(args.display.frame_time());
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -239,9 +236,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let mut failure = None;
     loop {
         tokio::select! {
-            _ = &mut ctrl_c => break,
-            _ = sigterm.recv() => break,
-            _ = sighup.recv() => break,
+            _ = shutdown.recv() => break,
             msg = stream.recv() => match msg {
                 Some(msg) => {
                     filter.update(&msg, Instant::now());

@@ -12,14 +12,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::ValueEnum;
-use tokio::signal::unix::{SignalKind, signal};
 
 use crate::board::MAX_COLUMNS;
 use crate::display::{Display, Note, Stacking, Terminal};
 use crate::panel::{Panel, PanelArgs};
 use crate::scene::{Align, Font, Scene, Scroll};
+use crate::shutdown::Shutdown;
 
 /// Size of one real panel in dots: as wide as the board can address, two
 /// rows short of it.
@@ -154,18 +154,12 @@ fn split_lines(args: &[String]) -> Vec<String> {
 /// of a pulse and leave a coil of the panel energised.
 fn stop_on_signals() -> Result<Arc<AtomicBool>> {
     let stop = Arc::new(AtomicBool::new(false));
-    for kind in [
-        SignalKind::interrupt(),
-        SignalKind::terminate(),
-        SignalKind::hangup(),
-    ] {
-        let mut signal = signal(kind).context("cannot listen for signals")?;
-        let stop = stop.clone();
-        tokio::spawn(async move {
-            signal.recv().await;
-            stop.store(true, Ordering::Relaxed);
-        });
-    }
+    let mut shutdown = Shutdown::listen()?;
+    let asked = stop.clone();
+    tokio::spawn(async move {
+        shutdown.recv().await;
+        asked.store(true, Ordering::Relaxed);
+    });
     Ok(stop)
 }
 

@@ -12,6 +12,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 use rs1090::decode::TimedMessage;
 
+use crate::shutdown::Shutdown;
 use crate::source::{FrameStream, SourceArgs};
 
 /// How often the screen is checked for redraw.
@@ -167,6 +168,7 @@ impl Drop for TerminalGuard {
 /// Open the frame source and show `view` until the user quits or the source
 /// ends.
 pub async fn run(source: &SourceArgs, view: &mut impl View) -> Result<()> {
+    let mut shutdown = Shutdown::listen()?;
     let mut stream = FrameStream::open(source).await?;
     let status = stream.description().to_string();
     let mut scroll = 0usize;
@@ -178,8 +180,6 @@ pub async fn run(source: &SourceArgs, view: &mut impl View) -> Result<()> {
     let guard = TerminalGuard;
 
     let mut events = EventStream::new();
-    let sigint = tokio::signal::ctrl_c();
-    tokio::pin!(sigint);
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -187,8 +187,8 @@ pub async fn run(source: &SourceArgs, view: &mut impl View) -> Result<()> {
     let mut last_draw = Instant::now();
     loop {
         tokio::select! {
-            // SIGINT sent from outside, e.g. `kill -INT`.
-            _ = &mut sigint => break,
+            // Signals sent from outside, e.g. `kill`.
+            _ = shutdown.recv() => break,
             msg = stream.recv() => match msg {
                 Some(msg) => dirty |= view.update(&msg, Instant::now()),
                 None => break,

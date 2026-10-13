@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::ValueEnum;
 use rs1090::decode::{Message, TimedMessage};
 
+use crate::shutdown::Shutdown;
 use crate::source::{FrameStream, SourceArgs};
 
 #[derive(clap::Args, Debug)]
@@ -27,16 +28,14 @@ pub enum Format {
 }
 
 pub async fn run(args: DumpArgs) -> Result<()> {
+    let mut shutdown = Shutdown::listen()?;
     let mut stream = FrameStream::open(&args.source).await?;
     eprintln!("adsb-flipdot: {}", stream.description());
-
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
 
     let mut count: u64 = 0;
     loop {
         tokio::select! {
-            _ = &mut ctrl_c => {
+            _ = shutdown.recv() => {
                 eprintln!("adsb-flipdot: stopping");
                 break;
             }

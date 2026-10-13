@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use crate::dump::to_json;
+use crate::shutdown::Shutdown;
 use crate::source::{FrameStream, SourceArgs};
 
 #[derive(clap::Args, Debug)]
@@ -66,12 +67,11 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     // process is killed.
     let mut writer = LineWriter::new(file);
 
+    let mut shutdown = Shutdown::listen()?;
     let mut stream = FrameStream::open(&args.source).await?;
     eprintln!("adsb-flipdot: {}", stream.description());
     eprintln!("adsb-flipdot: recording to {}", args.output.display());
 
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
     let deadline = async {
         match args.duration {
             Some(seconds) => tokio::time::sleep(Duration::from_secs(seconds)).await,
@@ -87,7 +87,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     let mut failure = None;
     loop {
         tokio::select! {
-            _ = &mut ctrl_c => break,
+            _ = shutdown.recv() => break,
             _ = &mut deadline => break,
             msg = stream.recv() => match msg {
                 Some(msg) => {

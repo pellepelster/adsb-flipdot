@@ -12,6 +12,7 @@ mod pi;
 mod record;
 mod run;
 mod scene;
+mod shutdown;
 mod source;
 mod template;
 mod tui;
