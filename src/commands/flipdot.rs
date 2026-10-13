@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 
 use crate::commands::shutdown::Shutdown;
-use crate::domain::scene::{Align, Font, Scene, Scroll};
+use crate::domain::scene::{Align, Font, Scroll, Typesetting};
 use crate::output::board::MAX_COLUMNS;
 use crate::output::panel::{Arrangement, Layout, Panel, PanelArgs};
 use crate::output::terminal::{Stacking, Terminal};
@@ -126,12 +126,18 @@ impl DisplayArgs {
         Ok(display)
     }
 
-    /// Lay out `lines` for this display.
-    pub fn scene<S: AsRef<str>>(&self, lines: &[S]) -> Scene {
-        let refs: Vec<&str> = lines.iter().map(AsRef::as_ref).collect();
+    /// How text is set on this display.
+    pub fn typesetting(&self) -> Typesetting {
         let (width, height) = self.display_size();
-        // Rest for one second before each pass so the start is readable.
-        Scene::build(&refs, self.font, self.align, width, height, self.scroll).with_hold(self.speed)
+        Typesetting {
+            width,
+            height,
+            font: self.font,
+            align: self.align,
+            scroll: self.scroll,
+            // Rest for one second before each pass so the start is readable.
+            hold: self.speed,
+        }
     }
 }
 
@@ -212,6 +218,7 @@ pub fn run(args: FlipdotArgs) -> Result<()> {
     // Animation needs a terminal to redraw in place, or the panels.
     let animate = std::io::stdout().is_terminal() || args.display.panel.gpio;
     let frame_time = args.display.frame_time();
+    let typesetting = args.display.typesetting();
     let stop = stop_on_signals()?;
 
     // Texts to show, one after another. Stdin is read on its own thread so a
@@ -249,7 +256,7 @@ pub fn run(args: FlipdotArgs) -> Result<()> {
     };
     let mut next = input.next(None);
     while let Next::Text(lines) = next {
-        let scene = args.display.scene(&lines);
+        let scene = typesetting.scene(&lines);
         // Before the frame: a line below it would end up inside the redraw.
         for warning in scene.warnings() {
             eprintln!("adsb-flipdot: {warning}");

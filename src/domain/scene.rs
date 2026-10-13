@@ -234,6 +234,40 @@ impl Scene {
     }
 }
 
+/// How text is set on a display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Typesetting {
+    /// Size of the display in dots.
+    pub width: u32,
+    pub height: u32,
+    pub font: Font,
+    pub align: Align,
+    pub scroll: Scroll,
+    /// Ticks a scrolling line rests at its start before each pass.
+    pub hold: u32,
+}
+
+impl Typesetting {
+    /// Lay out `lines`.
+    pub fn scene<S: AsRef<str>>(&self, lines: &[S]) -> Scene {
+        let refs: Vec<&str> = lines.iter().map(AsRef::as_ref).collect();
+        Scene::build(
+            &refs,
+            self.font,
+            self.align,
+            self.width,
+            self.height,
+            self.scroll,
+        )
+        .with_hold(self.hold)
+    }
+
+    /// A display with nothing on it.
+    pub fn blank(&self) -> FrameBuffer {
+        FrameBuffer::new(self.width, self.height)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
