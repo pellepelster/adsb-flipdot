@@ -1,6 +1,7 @@
 //! adsb-flipdot: receive Mode S / ADS-B frames from an RTL2832U dongle.
 
 mod aircraft_db;
+mod display;
 mod dump;
 mod filter;
 mod flipdot;

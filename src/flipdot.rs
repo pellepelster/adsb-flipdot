@@ -2,13 +2,14 @@
 //! show it.
 //!
 //! [`FrameBuffer`] is an `embedded-graphics` draw target. Everything that
-//! draws text goes through it, so the terminal preview here and the hardware
-//! driver later show exactly the same dots.
+//! draws text goes through it, and every frame reaches the terminal preview
+//! through the same [`Display`] as the hardware driver later, so both show
+//! exactly the same dots.
 //!
 //! A [`Scene`] is laid out text. Lines that fit are static; lines wider than
 //! the display scroll as a looping ticker, one dot per tick.
 
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{BufRead, IsTerminal};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
@@ -21,6 +22,8 @@ use embedded_graphics::mono_font::{MonoFont, MonoTextStyle};
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Alignment, Baseline, Text, TextStyleBuilder};
+
+use crate::display::{Display, Flip, Note, Stacking, Terminal};
 
 /// Size of one real panel in dots.
 pub const PANEL_WIDTH: u32 = 28;
@@ -208,11 +211,30 @@ impl FrameBuffer {
     /// Render as text: two terminal columns per dot, so dots come out round
     /// and roughly square like on the real panel.
     pub fn to_terminal(&self, color: bool) -> String {
-        // Yellow for a flipped dot, dim grey for the black side.
-        let (on, off, reset) = if color {
-            ("\x1b[93m●", "\x1b[90m·", "\x1b[0m")
+        self.to_terminal_marked(color, &[])
+    }
+
+    /// Like [`Self::to_terminal`], with the dots in `flipped` standing out
+    /// from the ones that stayed as they were.
+    pub fn to_terminal_marked(&self, color: bool, flipped: &[Flip]) -> String {
+        let mut marked = vec![false; self.dots.len()];
+        for flip in flipped {
+            if flip.x < self.width && flip.y < self.height {
+                marked[(flip.y * self.width + flip.x) as usize] = true;
+            }
+        }
+        // Yellow for a flipped dot, dim grey for the black side. A dot that
+        // just came on is white, one that just went off a red ring.
+        let (on, off, came_on, went_off, reset) = if color {
+            (
+                "\x1b[93m●",
+                "\x1b[90m·",
+                "\x1b[97m●",
+                "\x1b[91m○",
+                "\x1b[0m",
+            )
         } else {
-            ("●", "·", "")
+            ("●", "·", "◉", "○", "")
         };
         let mut out = String::new();
         for y in 0..self.height {
@@ -220,7 +242,13 @@ impl FrameBuffer {
                 if x > 0 {
                     out.push(' ');
                 }
-                out.push_str(if self.get(x, y) { on } else { off });
+                let marked = marked[(y * self.width + x) as usize];
+                out.push_str(match (self.get(x, y), marked) {
+                    (true, false) => on,
+                    (false, false) => off,
+                    (true, true) => came_on,
+                    (false, true) => went_off,
+                });
             }
             out.push_str(reset);
             out.push('\n');
@@ -427,24 +455,14 @@ fn split_lines(args: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Print a frame. With `redraw`, first move the cursor back up over the
-/// previous frame so the new one replaces it in place.
-fn print_frame(fb: &FrameBuffer, color: bool, redraw: bool) {
-    let mut out = String::new();
-    if redraw {
-        out.push_str(&format!("\x1b[{}A", fb.height));
-    }
-    out.push_str(&fb.to_terminal(color));
-    let mut stdout = std::io::stdout().lock();
-    let _ = stdout.write_all(out.as_bytes());
-    let _ = stdout.flush();
-}
-
 pub fn run(args: FlipdotArgs) -> Result<()> {
     args.display.check()?;
     // Animation needs a terminal to redraw in place.
     let terminal = std::io::stdout().is_terminal();
     let frame_time = args.display.frame_time();
+    let (width, height) = args.display.display_size();
+    let mut display = Display::new(width, height);
+    display.attach(Terminal::stdout(width, height, Stacking::Blocks));
 
     // Texts to show, one after another. Stdin is read on its own thread so a
     // scrolling text keeps moving while waiting for the next line.
@@ -469,19 +487,18 @@ pub fn run(args: FlipdotArgs) -> Result<()> {
         drop(tx);
     }
 
-    let mut first = true;
+    let new_text = Note {
+        caption: None,
+        new_text: true,
+    };
     let mut next = rx.recv().ok();
     while let Some(lines) = next.take() {
-        if !first {
-            println!();
-        }
-        first = false;
-
         let scene = args.display.scene(&lines);
-        print_frame(&scene.frame(0), terminal, false);
+        // Before the frame: a line below it would end up inside the redraw.
         for warning in scene.warnings() {
             eprintln!("adsb-flipdot: {warning}");
         }
+        display.show(&scene.frame(0), new_text)?;
 
         if !scene.scrolls() {
             next = rx.recv().ok();
@@ -515,7 +532,7 @@ pub fn run(args: FlipdotArgs) -> Result<()> {
                 std::thread::sleep(frame_time);
             }
             tick += 1;
-            print_frame(&scene.frame(tick), terminal, true);
+            display.show(&scene.frame(tick), Note::default())?;
         }
     }
     Ok(())

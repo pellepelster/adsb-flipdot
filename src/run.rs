@@ -5,11 +5,11 @@
 //! the text is laid out by the same [`Scene`] as `debug flipdot`. For now
 //! the display is simulated in the terminal.
 
-use std::io::{IsTerminal, Write};
 use std::time::Instant;
 
 use anyhow::Result;
 
+use crate::display::{Display, Note, Stacking, Terminal};
 use crate::filter::{Filter, FilterParams, Flight, format_track};
 use crate::flipdot::{DisplayArgs, FrameBuffer, Scene};
 use crate::source::{FrameStream, SourceArgs};
@@ -200,57 +200,6 @@ fn status_line(filter: &Filter, flights: &[Flight], shown: Option<usize>) -> Str
     }
 }
 
-/// The simulated display in the terminal: dots plus a status line.
-struct Simulator {
-    /// Redraw in place with colours. Otherwise append plain frames.
-    terminal: bool,
-    drawn: Option<(FrameBuffer, String)>,
-}
-
-impl Simulator {
-    fn new() -> Self {
-        Self {
-            terminal: std::io::stdout().is_terminal(),
-            drawn: None,
-        }
-    }
-
-    /// Show `frame`. `text_changed` tells a log reader that this is new
-    /// content and not just the next step of a scrolling line.
-    fn show(&mut self, frame: FrameBuffer, status: String, text_changed: bool) {
-        let mut out = String::new();
-        if self.terminal {
-            if self
-                .drawn
-                .as_ref()
-                .is_some_and(|(f, s)| *f == frame && *s == status)
-            {
-                return;
-            }
-            if let Some((previous, _)) = &self.drawn {
-                // Back up over the previous frame and its status line.
-                out.push_str(&format!("\x1b[{}A", previous.height() + 1));
-            }
-            out.push_str(&frame.to_terminal(true));
-            out.push_str(&status);
-            // Clear what is left of a longer previous status line.
-            out.push_str("\x1b[K\n");
-        } else {
-            // Piped or logged: one frame per change of text, no animation.
-            if !text_changed && self.drawn.is_some() {
-                return;
-            }
-            out.push_str(&frame.to_terminal(false));
-            out.push_str(&status);
-            out.push_str("\n\n");
-        }
-        let mut stdout = std::io::stdout().lock();
-        let _ = stdout.write_all(out.as_bytes());
-        let _ = stdout.flush();
-        self.drawn = Some((frame, status));
-    }
-}
-
 pub async fn run(args: RunArgs) -> Result<()> {
     args.display.check()?;
     let templates = if args.templates.is_empty() {
@@ -264,7 +213,10 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let mut stream = FrameStream::open(&args.source).await?;
     eprintln!("adsb-flipdot: {}", stream.description());
 
-    let mut simulator = Simulator::new();
+    // The simulated display in the terminal: dots plus a status line.
+    let (width, height) = args.display.display_size();
+    let mut display = Display::new(width, height);
+    display.attach(Terminal::stdout(width, height, Stacking::InPlace));
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
     let mut tick = tokio::time::interval(args.display.frame_time());
@@ -286,7 +238,11 @@ pub async fn run(args: RunArgs) -> Result<()> {
                 let changed = presenter.step(&flights, &args.display) || first;
                 first = false;
                 let status = status_line(&filter, &flights, presenter.shown(&flights));
-                simulator.show(presenter.frame(&args.display), status, changed);
+                let note = Note {
+                    caption: Some(&status),
+                    new_text: changed,
+                };
+                display.show(&presenter.frame(&args.display), note)?;
             }
         }
     }
