@@ -10,7 +10,7 @@ use std::io::{IsTerminal, Write};
 
 use anyhow::Result;
 
-use crate::scene::FrameBuffer;
+use crate::domain::scene::FrameBuffer;
 
 /// One dot turned to its other side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,7 +279,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::scene::{Align, Font, Scene};
+    use crate::domain::scene::{Align, Font, Scene};
 
     /// An output that records the flips it is given.
     #[derive(Clone, Default)]

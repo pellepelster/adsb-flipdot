@@ -12,12 +12,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Row, Table};
 
-use crate::board::{
+use crate::commands::shutdown::Shutdown;
+use crate::commands::tui::{Column, Input, Screen, cell};
+use crate::output::board::{
     Board, BoardArgs, COL_ADDRESS, MAX_COLUMNS, MAX_ROWS, NoPins, OVERRUN_FACTOR, Pins,
     ROW_ADDRESS, SIGNALS, line_number, micros,
 };
-use crate::shutdown::Shutdown;
-use crate::tui::{Column, Input, Screen, cell};
 
 #[derive(clap::Args, Debug)]
 pub struct PiArgs {
@@ -187,9 +187,9 @@ pub async fn run(args: PiArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::ROW_LOW;
-    use crate::board::tests::{board, index};
-    use crate::tui::tests::render;
+    use crate::commands::tui::tests::render;
+    use crate::output::board::ROW_LOW;
+    use crate::output::board::tests::{board, index};
 
     #[test]
     fn addresses_are_described_as_lines() {

@@ -136,7 +136,7 @@ impl Tracker {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::source::tests::timed;
+    use crate::source::stream::tests::timed;
 
     // Reference frames from "The 1090 Megahertz Riddle" (Junzi Sun).
     pub(crate) const IDENT: &str = "8d4840d6202cc371c32ce0576098"; // 4840d6, KLM1023

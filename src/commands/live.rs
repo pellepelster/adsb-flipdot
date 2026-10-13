@@ -6,9 +6,9 @@ use anyhow::Result;
 use ratatui::Frame;
 use rs1090::decode::TimedMessage;
 
-use crate::source::SourceArgs;
-use crate::tracker::Tracker;
-use crate::tui::{self, Column, View, age_style, opt};
+use crate::commands::tui::{self, Column, View, age_style, opt};
+use crate::domain::tracker::Tracker;
+use crate::source::stream::SourceArgs;
 
 #[derive(clap::Args, Debug)]
 pub struct LiveArgs {
@@ -103,9 +103,9 @@ pub async fn run(args: LiveArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::tests::timed;
-    use crate::tracker::tests::{IDENT, VELOCITY};
-    use crate::tui::tests::screen;
+    use crate::commands::tui::tests::screen;
+    use crate::domain::tracker::tests::{IDENT, VELOCITY};
+    use crate::source::stream::tests::timed;
 
     const SECS_30: Duration = Duration::from_secs(30);
 

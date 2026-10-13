@@ -10,8 +10,8 @@
 use anyhow::{Result, bail};
 use clap::ValueEnum;
 
-use crate::board::{Board, BoardArgs, GpioPins, MAX_COLUMNS, MAX_PANELS, MAX_ROWS, Pins};
-use crate::display::{Flip, Note, Output};
+use crate::output::board::{Board, BoardArgs, GpioPins, MAX_COLUMNS, MAX_PANELS, MAX_ROWS, Pins};
+use crate::output::display::{Flip, Note, Output};
 
 #[derive(clap::Args, Debug)]
 pub struct PanelArgs {
@@ -234,10 +234,10 @@ impl<P: Pins> Drop for Panel<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::line_number;
-    use crate::board::tests::{FakePins, Log, PULSE, named};
-    use crate::display::Display;
-    use crate::scene::FrameBuffer;
+    use crate::domain::scene::FrameBuffer;
+    use crate::output::board::line_number;
+    use crate::output::board::tests::{FakePins, Log, PULSE, named};
+    use crate::output::display::Display;
     use crate::tests::parse_args;
 
     /// Two 28x14 panels side by side.

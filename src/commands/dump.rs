@@ -4,8 +4,8 @@ use anyhow::Result;
 use clap::ValueEnum;
 use rs1090::decode::{Message, TimedMessage};
 
-use crate::shutdown::Shutdown;
-use crate::source::{FrameStream, SourceArgs};
+use crate::commands::shutdown::Shutdown;
+use crate::source::stream::{FrameStream, SourceArgs};
 
 #[derive(clap::Args, Debug)]
 pub struct DumpArgs {
@@ -91,7 +91,7 @@ fn print_message(msg: TimedMessage, format: Format) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::tests::frame;
+    use crate::source::stream::tests::frame;
 
     #[test]
     fn long_frame_decodes() {

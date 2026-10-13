@@ -11,11 +11,11 @@ use anyhow::Result;
 use ratatui::Frame;
 use rs1090::decode::TimedMessage;
 
-use crate::aircraft_db::{AircraftInfo, DbArgs, Lookup};
-use crate::parse;
-use crate::source::SourceArgs;
-use crate::tracker::Tracker;
-use crate::tui::{self, Column, View, age_style, opt};
+use crate::cli::parse;
+use crate::commands::tui::{self, Column, View, age_style, opt};
+use crate::domain::tracker::Tracker;
+use crate::source::aircraft_db::{AircraftInfo, DbArgs, Lookup};
+use crate::source::stream::SourceArgs;
 
 /// Mean Earth radius in kilometres.
 const EARTH_RADIUS_KM: f64 = 6371.0088;
@@ -450,10 +450,10 @@ pub async fn run(args: FilterArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::tests::timed;
+    use crate::commands::tui::tests::screen;
+    use crate::domain::tracker::tests::{IDENT, POS_EVEN, POS_ODD};
+    use crate::source::stream::tests::timed;
     use crate::tests::try_parse_args;
-    use crate::tracker::tests::{IDENT, POS_EVEN, POS_ODD};
-    use crate::tui::tests::screen;
 
     /// The default point of interest.
     const CENTER: (f64, f64) = (53.7271256, 9.9065838);
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn flights_carry_what_the_aircraft_broadcasts() {
-        use crate::tracker::Aircraft;
+        use crate::domain::tracker::Aircraft;
 
         let mut f = filter();
         let (lat, lon) = offset(3.0, 0.0);
@@ -798,7 +798,7 @@ mod tests {
         assert_eq!(flight.groundspeed_kt, Some(151.0));
 
         // With the database the type and registration are resolved.
-        let f = f.with_lookup(Lookup::ready(crate::aircraft_db::tests::sample_db()));
+        let f = f.with_lookup(Lookup::ready(crate::source::aircraft_db::tests::sample_db()));
         let info = &f.flights()[0].info;
         assert_eq!(info.typecode.as_deref(), Some("A320"));
         assert_eq!(info.registration.as_deref(), Some("G-EZTB"));
@@ -879,8 +879,8 @@ mod tests {
 
     #[test]
     fn draw_lists_passing_aircraft_with_track() {
-        use crate::aircraft_db::tests::sample_db;
-        use crate::tracker::Aircraft;
+        use crate::domain::tracker::Aircraft;
+        use crate::source::aircraft_db::tests::sample_db;
 
         let mut f = filter().with_lookup(Lookup::ready(sample_db()));
         let start = Instant::now();

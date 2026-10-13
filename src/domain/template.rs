@@ -6,7 +6,7 @@
 //! {{ callsign }} {{ aircraft code }} {{ track }}   one line
 //! ```
 
-use crate::filter::{Flight, format_track};
+use crate::domain::filter::{Flight, format_track};
 
 /// A value that can be put on the display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,7 +305,7 @@ Examples
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::aircraft_db::AircraftInfo;
+    use crate::source::aircraft_db::AircraftInfo;
 
     /// A fully known flight.
     pub(crate) fn easyjet() -> Flight {

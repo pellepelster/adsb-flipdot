@@ -10,14 +10,14 @@ use std::time::Instant;
 
 use anyhow::Result;
 
-use crate::display::{Note, Stacking};
-use crate::filter::{Filter, FilterParams, Flight, format_track};
-use crate::flipdot::DisplayArgs;
-use crate::scene::{FrameBuffer, Scene};
-use crate::shutdown::Shutdown;
-use crate::source::{FrameStream, SourceArgs};
-use crate::template::{Template, default_templates};
-use crate::tui::View;
+use crate::commands::flipdot::DisplayArgs;
+use crate::commands::shutdown::Shutdown;
+use crate::commands::tui::View;
+use crate::domain::filter::{Filter, FilterParams, Flight, format_track};
+use crate::domain::scene::{FrameBuffer, Scene};
+use crate::domain::template::{Template, default_templates};
+use crate::output::display::{Note, Stacking};
+use crate::source::stream::{FrameStream, SourceArgs};
 
 #[derive(clap::Args, Debug)]
 pub struct RunArgs {
@@ -271,8 +271,8 @@ pub async fn run(args: RunArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::Area;
-    use crate::template::tests::{anonymous, easyjet};
+    use crate::domain::filter::Area;
+    use crate::domain::template::tests::{anonymous, easyjet};
     use crate::tests::parse_args;
     use std::time::Duration;
 

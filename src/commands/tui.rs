@@ -13,8 +13,8 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 use ratatui::{DefaultTerminal, Frame};
 use rs1090::decode::TimedMessage;
 
-use crate::shutdown::Shutdown;
-use crate::source::{FrameStream, SourceArgs};
+use crate::commands::shutdown::Shutdown;
+use crate::source::stream::{FrameStream, SourceArgs};
 
 /// How often the screen is checked for redraw.
 const TICK: Duration = Duration::from_millis(200);

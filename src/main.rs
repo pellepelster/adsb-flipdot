@@ -1,28 +1,18 @@
 //! adsb-flipdot: receive Mode S / ADS-B frames from an RTL2832U dongle.
 
-mod aircraft_db;
-mod board;
-mod display;
-mod dump;
-mod filter;
-mod flipdot;
-mod live;
-mod panel;
-mod parse;
-mod pi;
-mod record;
-mod run;
-mod scene;
-mod shutdown;
+mod cli;
+mod commands;
+mod domain;
+mod output;
 mod source;
-mod template;
-mod tracker;
-mod tui;
 
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+
+use commands::{dump, flipdot, live, pi, record, run};
+use domain::{filter, template};
 
 #[derive(Parser, Debug)]
 #[command(name = "adsb-flipdot", version, about)]
@@ -95,6 +85,7 @@ async fn run(command: Command) -> Result<()> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::domain::scene;
 
     /// Parse `extra` as the options of one `clap::Args` struct on its own,
     /// the way `Cli` would see them.

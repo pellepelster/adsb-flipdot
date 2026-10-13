@@ -488,7 +488,7 @@ pub(crate) mod tests {
 
     /// The signals in `pcb/build_board.py` as (name, Pi pin, panel pin).
     fn board_script_signals() -> Vec<(String, u8, u8)> {
-        include_str!("../pcb/build_board.py")
+        include_str!("../../pcb/build_board.py")
             .split("(\"")
             .filter_map(|chunk| {
                 let fields: Vec<&str> = chunk.split(')').next()?.split(',').collect();

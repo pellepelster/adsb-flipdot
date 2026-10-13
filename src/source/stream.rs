@@ -18,7 +18,7 @@ use rs1090::source::iqread;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use crate::parse;
+use crate::cli::parse;
 
 /// ADS-B downlink frequency in Hz.
 const CENTER_FREQ_HZ: u32 = 1_090_000_000;

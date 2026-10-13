@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use crate::dump::to_json;
-use crate::shutdown::Shutdown;
-use crate::source::{FrameStream, SourceArgs};
+use crate::commands::dump::to_json;
+use crate::commands::shutdown::Shutdown;
+use crate::source::stream::{FrameStream, SourceArgs};
 
 #[derive(clap::Args, Debug)]
 pub struct RecordArgs {
@@ -128,7 +128,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::tests::{TempFile, timed};
+    use crate::source::stream::tests::{TempFile, timed};
     use crate::tests::parse_args;
     use std::io::Read;
 
@@ -183,7 +183,7 @@ mod tests {
     /// recording is exactly what went in.
     #[tokio::test]
     async fn recording_a_replay_reproduces_the_frames() {
-        use crate::tracker::tests::{IDENT, POS_EVEN, POS_ODD, VELOCITY};
+        use crate::domain::tracker::tests::{IDENT, POS_EVEN, POS_ODD, VELOCITY};
 
         let original: String = [IDENT, VELOCITY, POS_ODD, POS_EVEN, "5d4ca4ab3b2f5c"]
             .iter()
