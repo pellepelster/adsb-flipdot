@@ -15,8 +15,8 @@ import math
 from pathlib import Path
 
 LAT, LON = 53.7271256, 9.9065838
-AREA_WIDTH_KM = 10.0
-AREA_LENGTH_KM = 10.0
+AREA_WIDTH_KM = 4.0
+AREA_LENGTH_KM = 6.0
 AREA_OFFSET_PERCENT = 80.0
 VIEW_DIRECTION = 153.0
 MAX_ALTITUDE_FT = 5000
@@ -80,8 +80,8 @@ def local(right, ahead, up=0.0):
     return add(add(mul(RIGHT, right), mul(AHEAD, ahead)), mul(UP, up))
 
 
-CAMERA = local(-4.0, -15.0, 12.5)
-CAM_AHEAD = unit(sub(local(0.6, 7.2), CAMERA))
+CAMERA = local(-3.0, -10.0, 8.0)
+CAM_AHEAD = unit(sub(local(0.4, 4.0), CAMERA))
 CAM_RIGHT = unit(cross(CAM_AHEAD, UP))
 CAM_UP = cross(CAM_RIGHT, CAM_AHEAD)
 FOCAL = 1550.0
@@ -236,12 +236,12 @@ def on_approach(km_out):
 
 line(on_approach(0.0), on_approach(17.0), stroke="#39424d", stroke_width=2, stroke_dasharray="3 7", stroke_linecap="round")
 
-arrow_tip = local(0.0, 3.6)
-line(local(0.0, 0.5), local(0.0, 3.3), stroke="#1f2a36", stroke_width=3)
-polygon([arrow_tip, local(-0.22, 3.0), local(0.22, 3.0)], fill="#1f2a36")
+arrow_tip = local(0.0, 2.6)
+line(local(0.0, 0.4), local(0.0, 2.3), stroke="#1f2a36", stroke_width=3)
+polygon([arrow_tip, local(-0.16, 2.15), local(0.16, 2.15)], fill="#1f2a36")
 
-polygon([local(-0.5, -0.45), local(0.55, -0.45), local(0.7, 0.5), local(-0.35, 0.5)], fill="#000000", fill_opacity=0.16)
-w, d, wall, ridge = 0.38, 0.32, 0.42, 0.74
+polygon([local(-0.34, -0.3), local(0.38, -0.3), local(0.48, 0.34), local(-0.24, 0.34)], fill="#000000", fill_opacity=0.16)
+w, d, wall, ridge = 0.26, 0.22, 0.3, 0.52
 house = [
     ("#f7f1e3", [local(-w, -d), local(w, -d), local(w, -d, wall), local(-w, -d, wall)]),
     ("#f7f1e3", [local(-w, d), local(w, d), local(w, d, wall), local(-w, d, wall)]),
@@ -252,15 +252,15 @@ house = [
 ]
 for fill, face in sorted(house, key=lambda item: -depth(centroid(item[1]))):
     polygon(face, fill=fill, stroke="#5a4636", stroke_width=1, stroke_linejoin="round")
-polygon([local(-0.07, -d), local(0.07, -d), local(0.07, -d, 0.26), local(-0.07, -d, 0.26)], fill="#5a4636")
+polygon([local(-0.05, -d), local(0.05, -d), local(0.05, -d, 0.18), local(-0.05, -d, 0.18)], fill="#5a4636")
 
-aircraft_at = on_approach(4.6)
+aircraft_at = on_approach(5.8)
 inbound = mul(outbound, -1)
 wing = cross(inbound, UP)
 outline = [(0.5, 0), (0.42, 0.035), (0.1, 0.04), (-0.05, 0.45), (-0.15, 0.45), (-0.08, 0.04),
            (-0.38, 0.03), (-0.46, 0.17), (-0.52, 0.17), (-0.48, 0)]
 outline += [(a, -b) for a, b in reversed(outline[1:-1])]
-plane = [add(add(aircraft_at, mul(inbound, a * 1.3)), mul(wing, b * 1.3)) for a, b in outline]
+plane = [add(add(aircraft_at, mul(inbound, a * 0.8)), mul(wing, b * 0.8)) for a, b in outline]
 shadow = [(p[0], p[1], 0.0) for p in plane]
 polygon(shadow, fill="#000000", fill_opacity=0.14)
 line(aircraft_at, (aircraft_at[0], aircraft_at[1], 0.0), stroke="#39424d", stroke_width=1, stroke_dasharray="2 4")
@@ -281,7 +281,7 @@ out.append(f'<path d="M{hx:.1f},{hy:.1f}L{lx + 10:.1f},{ly - 7:.1f}" stroke="#1f
 text(lx, ly, f"{LAT}° N, {LON}° E", size=22, anchor="end", weight="bold")
 text(lx, ly + 24, "--lat / --lon", size=16, anchor="end", fill="#4a5764")
 
-vx, vy = project(local(0.0, 3.6))
+vx, vy = project(arrow_tip)
 text(vx + 16, vy + 4, f"--view-direction {VIEW_DIRECTION:g}°", size=17, fill="#1f2a36", weight="bold")
 text(vx + 16, vy + 26, f"--area-offset {AREA_OFFSET_PERCENT:g} % ahead of the house", size=15, fill="#4a5764")
 
@@ -294,11 +294,11 @@ text((x1 + x2) / 2 + 18, (y1 + y2) / 2 + 22, f"--area-length {AREA_LENGTH_KM:g} 
 (x1, y1), (x2, y2) = project(floor[0]), project(roof[0])
 text(x1 - 16, (y1 + y2) / 2 + 6, f"--max-altitude {MAX_ALTITUDE_FT} ft", size=20, anchor="end", weight="bold")
 
-north_from = local(-8.2, 2.0)
-north_to = add(north_from, (0.0, 1.8, 0.0))
+north_from = local(-5.0, 1.5)
+north_to = add(north_from, (0.0, 1.2, 0.0))
 line(north_from, north_to, stroke="#1f2a36", stroke_width=2.5)
-polygon([add(north_to, (0.0, 0.5, 0.0)), add(north_to, (-0.2, 0.0, 0.0)), add(north_to, (0.2, 0.0, 0.0))], fill="#1f2a36")
-(nx, ny), (bx, by) = project(add(north_to, (0.0, 0.5, 0.0))), project(north_from)
+polygon([add(north_to, (0.0, 0.35, 0.0)), add(north_to, (-0.14, 0.0, 0.0)), add(north_to, (0.14, 0.0, 0.0))], fill="#1f2a36")
+(nx, ny), (bx, by) = project(add(north_to, (0.0, 0.35, 0.0))), project(north_from)
 n = math.hypot(nx - bx, ny - by)
 text(nx + (nx - bx) / n * 18, ny + (ny - by) / n * 18 + 6, "N", size=18, anchor="middle", weight="bold")
 

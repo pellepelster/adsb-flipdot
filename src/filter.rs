@@ -44,11 +44,11 @@ pub struct FilterParams {
     pub lon: f64,
 
     /// Width of the rectangle, across the view direction, in kilometres.
-    #[arg(long, value_name = "KM", default_value_t = 10.0, value_parser = parse_positive)]
+    #[arg(long, value_name = "KM", default_value_t = 4.0, value_parser = parse_positive)]
     pub area_width: f64,
 
     /// Length of the rectangle, along the view direction, in kilometres.
-    #[arg(long, value_name = "KM", default_value_t = 10.0, value_parser = parse_positive)]
+    #[arg(long, value_name = "KM", default_value_t = 6.0, value_parser = parse_positive)]
     pub area_length: f64,
 
     /// How much of the length lies ahead of the point, in percent. 50
@@ -996,7 +996,7 @@ mod tests {
                 args.max_altitude,
                 args.expire
             ),
-            (10.0, 10.0, 80.0, 153.0, 5000, 30)
+            (4.0, 6.0, 80.0, 153.0, 5000, 30)
         );
 
         let args = parse(&[
