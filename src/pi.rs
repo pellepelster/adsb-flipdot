@@ -134,21 +134,28 @@ const ROW_HIGH: usize = 5;
 const ROW_LOW: usize = 6;
 const COL_ADDRESS: Range<usize> = 7..12;
 const COL_HIGH_LOW: usize = 12;
+const COL_SELECT: Range<usize> = 13..18;
 
 /// Rows a panel can have at most.
-const MAX_ROWS: u8 = 16;
+pub(crate) const MAX_ROWS: u8 = 16;
+/// Columns a panel can have at most: four decoder chips of seven lines.
+pub(crate) const MAX_COLUMNS: u8 = 28;
+/// Panels the board can select.
+pub(crate) const MAX_PANELS: usize = COL_SELECT.end - COL_SELECT.start;
+/// Rest between two pulses.
+const PULSE_GAP: Duration = Duration::from_micros(10);
 
 /// The pins behind the signals.
-trait Pins {
+pub(crate) trait Pins {
     fn set(&mut self, gpio: u32, high: bool) -> Result<()>;
 }
 
 /// The Pi's header pins, through the kernel's GPIO character device.
-struct GpioPins(gpiocdev::Request);
+pub(crate) struct GpioPins(gpiocdev::Request);
 
 impl GpioPins {
     /// Take every signal's line as an output, low.
-    fn open(chip: &Path) -> Result<Self> {
+    pub(crate) fn open(chip: &Path) -> Result<Self> {
         let lines: Vec<u32> = SIGNALS.iter().map(|signal| signal.gpio).collect();
         let request = gpiocdev::Request::builder()
             .on_chip(chip)
@@ -159,7 +166,7 @@ impl GpioPins {
             .with_context(|| {
                 format!(
                     "cannot take the GPIO lines on {} (is this a Raspberry Pi, may this user \
-                     use GPIO, is another program holding the pins? --dry-run needs no pins)",
+                     use GPIO, is another program holding the pins?)",
                     chip.display()
                 )
             })?;
@@ -189,7 +196,7 @@ impl Pins for NoPins {
 ///
 /// Every line is driven low when the board is dropped, so that no coil stays
 /// energised however the program ends.
-struct Board<P: Pins> {
+pub(crate) struct Board<P: Pins> {
     pins: P,
     levels: [bool; SIGNALS.len()],
     /// Length asked for.
@@ -203,7 +210,7 @@ struct Board<P: Pins> {
 
 impl<P: Pins> Board<P> {
     /// Start with every line low.
-    fn new(pins: P, pulse: Duration) -> Result<Self> {
+    pub(crate) fn new(pins: P, pulse: Duration) -> Result<Self> {
         let mut board = Self {
             pins,
             levels: [false; SIGNALS.len()],
@@ -269,6 +276,75 @@ impl<P: Pins> Board<P> {
         Ok(())
     }
 
+    /// Set a line, unless it is at that level already.
+    fn put(&mut self, index: usize, high: bool) -> Result<()> {
+        if self.levels[index] == high {
+            return Ok(());
+        }
+        self.set(index, high)
+    }
+
+    /// Put `address` on a group of address lines.
+    fn put_address(&mut self, bits: Range<usize>, address: u8) -> Result<()> {
+        for (bit, index) in bits.enumerate() {
+            self.put(index, address >> bit & 1 == 1)?;
+        }
+        Ok(())
+    }
+
+    /// Flip one dot: put its addresses and the direction on the lines, then
+    /// pulse the COL-SEL line of its panel. `select` counts the COL-SEL
+    /// lines from 0. Every line is driven low if this fails.
+    pub(crate) fn flip(&mut self, select: usize, row: u8, column: u8, on: bool) -> Result<()> {
+        let result = self.try_flip(select, row, column, on);
+        if result.is_err() {
+            let _ = self.all_low();
+        }
+        result
+    }
+
+    fn try_flip(&mut self, select: usize, row: u8, column: u8, on: bool) -> Result<()> {
+        let Some(select) = COL_SELECT.clone().nth(select) else {
+            anyhow::bail!("the board has no COL-SEL{select}");
+        };
+        // A dot comes on with the column feeding and the row draining.
+        let (active, other) = if on {
+            (ROW_LOW, ROW_HIGH)
+        } else {
+            (ROW_HIGH, ROW_LOW)
+        };
+        // ROW-HIGH and ROW-LOW together short the coil supply, so the other
+        // one goes low first.
+        self.put(other, false)?;
+        self.put(active, true)?;
+        self.put(COL_HIGH_LOW, !on)?;
+        self.put_address(ROW_ADDRESS, row)?;
+        self.put_address(COL_ADDRESS, column)?;
+        self.pulse(select)?;
+
+        let lowered = Instant::now();
+        while lowered.elapsed() < PULSE_GAP {
+            std::hint::spin_loop();
+        }
+        Ok(())
+    }
+
+    /// Stop driving the rows, for the time between two frames.
+    pub(crate) fn rest(&mut self) -> Result<()> {
+        self.put(ROW_HIGH, false)?;
+        self.put(ROW_LOW, false)
+    }
+
+    /// The pulses sent so far and how well their length was kept.
+    pub(crate) fn pulse_report(&self) -> String {
+        format!(
+            "{} pulses sent, longest {}, {} overruns",
+            self.pulses,
+            micros(self.longest_pulse),
+            self.overruns
+        )
+    }
+
     /// Drive every line low, the COL-SEL lines first. Goes on after a
     /// failure and returns the first one.
     fn all_low(&mut self) -> Result<()> {
@@ -320,7 +396,7 @@ impl<P: Pins> Drop for Board<P> {
 
 /// The row or column, counted from 1, that an address selects. Each decoder
 /// chip serves seven lines and leaves every eighth code unused.
-fn line_number(address: u8) -> Option<u8> {
+pub(crate) fn line_number(address: u8) -> Option<u8> {
     let (chip, line) = (address >> 3, address & 7);
     (line != 0).then_some(chip * 7 + line)
 }
@@ -342,7 +418,7 @@ fn micros(duration: Option<Duration>) -> String {
 /// Give the calling thread real-time priority, so that ordinary processes
 /// cannot interrupt a pulse, and keep its memory in RAM. Returns false when
 /// the system does not allow it.
-fn enable_realtime() -> bool {
+pub(crate) fn enable_realtime() -> bool {
     // SAFETY: `sched_param` is plain data for which all zeroes is valid.
     let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
     param.sched_priority = REALTIME_PRIORITY;
@@ -516,12 +592,7 @@ async fn show<P: Pins>(mut board: Board<P>, status: &str) -> Result<()> {
 
     drop(guard);
     let result = board.all_low();
-    eprintln!(
-        "adsb-flipdot: {} pulses sent, longest {}, {} overruns; all lines low",
-        board.pulses,
-        micros(board.longest_pulse),
-        board.overruns
-    );
+    eprintln!("adsb-flipdot: {}; all lines low", board.pulse_report());
     result
 }
 
@@ -530,7 +601,8 @@ pub async fn run(args: PiArgs) -> Result<()> {
     if args.dry_run {
         return show(Board::new(NoPins, pulse)?, "dry run, no pin is touched").await;
     }
-    let pins = GpioPins::open(&args.chip)?;
+    let pins = GpioPins::open(&args.chip)
+        .context("cannot use the adapter board (--dry-run needs no pins)")?;
     let priority = if enable_realtime() {
         "real-time priority"
     } else {
@@ -541,7 +613,7 @@ pub async fn run(args: PiArgs) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -549,13 +621,13 @@ mod tests {
     use crate::tui::tests::render;
 
     /// Every level written, in order, as (GPIO, high).
-    type Log = Rc<RefCell<Vec<(u32, bool)>>>;
+    pub(crate) type Log = Rc<RefCell<Vec<(u32, bool)>>>;
 
     /// Pins that record what is written to them. Writing to the GPIO in
     /// `broken` fails.
-    struct FakePins {
-        log: Log,
-        broken: Option<u32>,
+    pub(crate) struct FakePins {
+        pub(crate) log: Log,
+        pub(crate) broken: Option<u32>,
     }
 
     impl Pins for FakePins {
@@ -568,7 +640,7 @@ mod tests {
         }
     }
 
-    const PULSE: Duration = Duration::from_micros(50);
+    pub(crate) const PULSE: Duration = Duration::from_micros(50);
 
     /// A board on fake pins, with the writes of its start left out of the log.
     fn board() -> (Board<FakePins>, Log) {
@@ -680,6 +752,106 @@ mod tests {
         assert!(written.iter().all(|(_, high)| !high));
         assert_eq!(written[0].0, gpio("COL-SEL0"), "COL-SEL lines first");
         assert!(board.levels.iter().all(|high| !high));
+    }
+
+    /// The names of the lines written, with their levels.
+    pub(crate) fn named(log: &Log) -> Vec<(&'static str, bool)> {
+        let name = |gpio| SIGNALS.iter().find(|s| s.gpio == gpio).unwrap().name;
+        log.borrow()
+            .iter()
+            .map(|(gpio, high)| (name(*gpio), *high))
+            .collect()
+    }
+
+    #[test]
+    fn flip_sets_the_lines_of_the_documented_example_and_pulses() {
+        // "Dot 1/1 on" in docs/mobitec/README.md.
+        let (mut board, log) = board();
+        board.flip(0, 1, 1, true).unwrap();
+        assert_eq!(
+            named(&log),
+            [
+                ("ROW-LOW", true),
+                ("ROW0", true),
+                ("COL0", true),
+                ("COL-SEL0", true),
+                ("COL-SEL0", false)
+            ]
+        );
+        assert_eq!(board.pulses, 1);
+
+        // "Dot 1/1 off": the same addresses, both directions turned round.
+        log.borrow_mut().clear();
+        board.flip(0, 1, 1, false).unwrap();
+        assert_eq!(
+            named(&log),
+            [
+                ("ROW-LOW", false),
+                ("ROW-HIGH", true),
+                ("COL-H/L", true),
+                ("COL-SEL0", true),
+                ("COL-SEL0", false)
+            ]
+        );
+    }
+
+    #[test]
+    fn flip_writes_only_the_lines_that_change() {
+        let (mut board, log) = board();
+        board.flip(1, 0b01101, 0b10010, true).unwrap();
+        assert_eq!(board.address(ROW_ADDRESS), 0b01101);
+        assert_eq!(board.address(COL_ADDRESS), 0b10010);
+        log.borrow_mut().clear();
+        // The next row of the same column: one address bit and the pulse.
+        board.flip(1, 0b01111, 0b10010, true).unwrap();
+        assert_eq!(
+            named(&log),
+            [("ROW1", true), ("COL-SEL1", true), ("COL-SEL1", false)]
+        );
+    }
+
+    #[test]
+    fn flip_never_has_row_high_and_row_low_high_together() {
+        let (mut board, log) = board();
+        for on in [true, false, false, true, true, false] {
+            board.flip(0, 3, 5, on).unwrap();
+        }
+        let (mut high, mut low) = (false, false);
+        for (name, level) in named(&log) {
+            match name {
+                "ROW-HIGH" => high = level,
+                "ROW-LOW" => low = level,
+                _ => {}
+            }
+            assert!(!(high && low), "both high");
+        }
+    }
+
+    #[test]
+    fn rest_stops_driving_the_rows() {
+        let (mut board, log) = board();
+        board.flip(0, 1, 1, false).unwrap();
+        log.borrow_mut().clear();
+        board.rest().unwrap();
+        board.rest().unwrap();
+        assert_eq!(named(&log), [("ROW-HIGH", false)]);
+    }
+
+    #[test]
+    fn a_failed_flip_drives_every_line_low() {
+        let log = Log::default();
+        let pins = FakePins {
+            log: log.clone(),
+            broken: None,
+        };
+        let mut board = Board::new(pins, PULSE).unwrap();
+        board.flip(0, 1, 1, true).unwrap();
+        board.pins.broken = Some(gpio("COL1"));
+        assert!(board.flip(0, 1, 2, true).is_err());
+        assert!(board.levels.iter().all(|high| !high));
+        assert_eq!(board.pulses, 1, "no pulse for the failed flip");
+        board.pins.broken = None;
+        assert!(board.flip(9, 1, 1, true).is_err(), "no such COL-SEL line");
     }
 
     #[test]

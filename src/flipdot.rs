@@ -10,10 +10,12 @@
 //! the display scroll as a looping ticker, one dot per tick.
 
 use std::io::{BufRead, IsTerminal};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use embedded_graphics::mono_font::iso_8859_1::{
     FONT_4X6, FONT_5X7, FONT_5X8, FONT_6X10, FONT_7X14,
@@ -23,7 +25,10 @@ use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Alignment, Baseline, Text, TextStyleBuilder};
 
+use tokio::signal::unix::{SignalKind, signal};
+
 use crate::display::{Display, Flip, Note, Stacking, Terminal};
+use crate::panel::{Panel, PanelArgs};
 
 /// Size of one real panel in dots.
 pub const PANEL_WIDTH: u32 = 28;
@@ -33,6 +38,8 @@ pub const PANELS: u32 = 2;
 /// Blank space between the end and the restart of a scrolling line, in
 /// character cells.
 const TICKER_GAP_CHARS: u32 = 2;
+/// How often a wait for the next text looks whether the program should end.
+const STOP_POLL: Duration = Duration::from_millis(50);
 
 #[derive(clap::Args, Debug)]
 pub struct FlipdotArgs {
@@ -80,6 +87,9 @@ pub struct DisplayArgs {
     /// Scroll speed, in dots per second.
     #[arg(long, value_name = "DOTS_PER_SECOND", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=60))]
     pub speed: u32,
+
+    #[command(flatten)]
+    pub panel: PanelArgs,
 }
 
 impl DisplayArgs {
@@ -108,6 +118,20 @@ impl DisplayArgs {
             );
         }
         Ok(())
+    }
+
+    /// The display with its outputs: the preview in the terminal and, with
+    /// `--gpio`, the panels. Opening the panels gives the calling thread
+    /// real-time priority, which threads started afterwards inherit.
+    pub fn open(&self, stacking: Stacking) -> Result<Display> {
+        let (width, height) = self.display_size();
+        let mut display = Display::new(width, height);
+        // The panels first: the terminal then shows only what they did.
+        if self.panel.gpio {
+            display.attach(Panel::open(self)?);
+        }
+        display.attach(Terminal::stdout(width, height, stacking));
+        Ok(display)
     }
 
     /// Lay out `lines` for this display.
@@ -455,14 +479,77 @@ fn split_lines(args: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// A flag that is set when the program is asked to end. From here on the
+/// signals no longer end it by themselves, which could happen in the middle
+/// of a pulse and leave a coil of the panel energised.
+fn stop_on_signals() -> Result<Arc<AtomicBool>> {
+    let stop = Arc::new(AtomicBool::new(false));
+    for kind in [
+        SignalKind::interrupt(),
+        SignalKind::terminate(),
+        SignalKind::hangup(),
+    ] {
+        let mut signal = signal(kind).context("cannot listen for signals")?;
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            signal.recv().await;
+            stop.store(true, Ordering::Relaxed);
+        });
+    }
+    Ok(stop)
+}
+
+/// What a wait for the next text ended with.
+enum Next {
+    Text(Vec<String>),
+    /// The deadline has come.
+    Due,
+    /// The program should end, or no text can come and nothing is due.
+    End,
+}
+
+/// The texts to show, one after another.
+struct Input {
+    texts: Receiver<Vec<String>>,
+    /// More texts may come.
+    open: bool,
+    stop: Arc<AtomicBool>,
+}
+
+impl Input {
+    /// Wait for the next text, until `deadline` if there is one.
+    fn next(&mut self, deadline: Option<Instant>) -> Next {
+        loop {
+            if self.stop.load(Ordering::Relaxed) {
+                return Next::End;
+            }
+            let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+            if left == Some(Duration::ZERO) {
+                return Next::Due;
+            }
+            let step = left.map_or(STOP_POLL, |left| left.min(STOP_POLL));
+            if !self.open {
+                if deadline.is_none() {
+                    return Next::End;
+                }
+                std::thread::sleep(step);
+                continue;
+            }
+            match self.texts.recv_timeout(step) {
+                Ok(lines) => return Next::Text(lines),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => self.open = false,
+            }
+        }
+    }
+}
+
 pub fn run(args: FlipdotArgs) -> Result<()> {
     args.display.check()?;
-    // Animation needs a terminal to redraw in place.
-    let terminal = std::io::stdout().is_terminal();
+    // Animation needs a terminal to redraw in place, or the panels.
+    let animate = std::io::stdout().is_terminal() || args.display.panel.gpio;
     let frame_time = args.display.frame_time();
-    let (width, height) = args.display.display_size();
-    let mut display = Display::new(width, height);
-    display.attach(Terminal::stdout(width, height, Stacking::Blocks));
+    let stop = stop_on_signals()?;
 
     // Texts to show, one after another. Stdin is read on its own thread so a
     // scrolling text keeps moving while waiting for the next line.
@@ -487,12 +574,18 @@ pub fn run(args: FlipdotArgs) -> Result<()> {
         drop(tx);
     }
 
+    let mut input = Input {
+        texts: rx,
+        open: true,
+        stop,
+    };
+    let mut display = args.display.open(Stacking::Blocks)?;
     let new_text = Note {
         caption: None,
         new_text: true,
     };
-    let mut next = rx.recv().ok();
-    while let Some(lines) = next.take() {
+    let mut next = input.next(None);
+    while let Next::Text(lines) = next {
         let scene = args.display.scene(&lines);
         // Before the frame: a line below it would end up inside the redraw.
         for warning in scene.warnings() {
@@ -501,39 +594,36 @@ pub fn run(args: FlipdotArgs) -> Result<()> {
         display.show(&scene.frame(0), new_text)?;
 
         if !scene.scrolls() {
-            next = rx.recv().ok();
+            next = input.next(None);
             continue;
         }
-        if !terminal {
+        if !animate {
             eprintln!(
-                "adsb-flipdot: text is wider than the display; it scrolls when run in a terminal"
+                "adsb-flipdot: text is wider than the display; it scrolls when run in a terminal \
+                 or with --gpio"
             );
-            next = rx.recv().ok();
+            next = input.next(None);
             continue;
         }
 
         // Scroll until the next text arrives. With text given as arguments
         // there is no next text, so this runs until Ctrl-C.
         let mut tick: u64 = 0;
-        let mut input_open = true;
-        loop {
-            if input_open {
-                match rx.recv_timeout(frame_time) {
-                    Ok(lines) => {
-                        next = Some(lines);
-                        break;
-                    }
-                    Err(RecvTimeoutError::Timeout) => {}
-                    // End of stdin: stop there. Arguments: keep scrolling.
-                    Err(RecvTimeoutError::Disconnected) if args.text.is_empty() => break,
-                    Err(RecvTimeoutError::Disconnected) => input_open = false,
-                }
-            } else {
-                std::thread::sleep(frame_time);
+        let mut due = Instant::now() + frame_time;
+        next = loop {
+            match input.next(Some(due)) {
+                Next::Due => {}
+                other => break other,
+            }
+            // End of stdin: stop there. Arguments: keep scrolling.
+            if !input.open && args.text.is_empty() {
+                break Next::End;
             }
             tick += 1;
             display.show(&scene.frame(tick), Note::default())?;
-        }
+            // A frame that took too long is not caught up on.
+            due = (due + frame_time).max(Instant::now());
+        };
     }
     Ok(())
 }

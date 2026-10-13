@@ -2,14 +2,16 @@
 //!
 //! Frames go through the same [`Filter`] as `debug filter`. Each aircraft
 //! inside the rectangle is turned into text by one or more [`Template`]s, and
-//! the text is laid out by the same [`Scene`] as `debug flipdot`. For now
-//! the display is simulated in the terminal.
+//! the text is laid out by the same [`Scene`] as `debug flipdot`. The
+//! display is simulated in the terminal and, with `--gpio`, shown on the
+//! panels.
 
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use tokio::signal::unix::{SignalKind, signal};
 
-use crate::display::{Display, Note, Stacking, Terminal};
+use crate::display::{Note, Stacking};
 use crate::filter::{Filter, FilterParams, Flight, format_track};
 use crate::flipdot::{DisplayArgs, FrameBuffer, Scene};
 use crate::source::{FrameStream, SourceArgs};
@@ -213,19 +215,32 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let mut stream = FrameStream::open(&args.source).await?;
     eprintln!("adsb-flipdot: {}", stream.description());
 
-    // The simulated display in the terminal: dots plus a status line.
-    let (width, height) = args.display.display_size();
-    let mut display = Display::new(width, height);
-    display.attach(Terminal::stdout(width, height, Stacking::InPlace));
+    // The simulated display in the terminal, dots plus a status line, and
+    // with `--gpio` the panels. Opened last: the threads of the source must
+    // not inherit the real-time priority of the panels.
+    let mut display = match args.display.open(Stacking::InPlace) {
+        Ok(display) => display,
+        Err(error) => {
+            let _ = stream.close().await;
+            return Err(error);
+        }
+    };
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
+    // Listened for so that they cannot end the program in the middle of a
+    // pulse, which would leave a coil of the panel energised.
+    let mut sigterm = signal(SignalKind::terminate()).context("cannot listen for SIGTERM")?;
+    let mut sighup = signal(SignalKind::hangup()).context("cannot listen for SIGHUP")?;
     let mut tick = tokio::time::interval(args.display.frame_time());
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut first = true;
+    let mut failure = None;
     loop {
         tokio::select! {
             _ = &mut ctrl_c => break,
+            _ = sigterm.recv() => break,
+            _ = sighup.recv() => break,
             msg = stream.recv() => match msg {
                 Some(msg) => {
                     filter.update(&msg, Instant::now());
@@ -242,14 +257,19 @@ pub async fn run(args: RunArgs) -> Result<()> {
                     caption: Some(&status),
                     new_text: changed,
                 };
-                display.show(&presenter.frame(&args.display), note)?;
+                if let Err(error) = display.show(&presenter.frame(&args.display), note) {
+                    failure = Some(error);
+                    break;
+                }
             }
         }
     }
 
+    // Lowers every line of the panels.
+    drop(display);
     let result = stream.close().await;
     eprintln!("adsb-flipdot: {}", filter.summary());
-    result
+    failure.map_or(result, Err)
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ mod dump;
 mod filter;
 mod flipdot;
 mod live;
+mod panel;
 mod pi;
 mod record;
 mod run;
