@@ -28,6 +28,10 @@ tokio = { version = "1", features = ["test-util"] }
 # `cross` wraps the linker in a tracing shell script whose stderr is harmless.
 linker_messages = "allow"
 
+[lints.clippy]
+# A failed unwrap takes the display down. Tests are exempt, see clippy.toml.
+unwrap_used = "warn"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
