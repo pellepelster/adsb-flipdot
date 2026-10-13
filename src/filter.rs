@@ -1,4 +1,4 @@
-//! Aircraft filter: which aircraft are currently inside a square around a
+//! Aircraft filter: which aircraft are currently inside a rectangle around a
 //! point and below an altitude limit.
 //!
 //! Used by `debug filter`, which lists them in a table, and by `run`, which
@@ -43,12 +43,22 @@ pub struct FilterParams {
           value_parser = parse_longitude)]
     pub lon: f64,
 
-    /// Edge length of the square centred on the point, in kilometres.
+    /// Width of the rectangle, across the view direction, in kilometres.
     #[arg(long, value_name = "KM", default_value_t = 10.0, value_parser = parse_positive)]
-    pub size: f64,
+    pub area_width: f64,
+
+    /// Length of the rectangle, along the view direction, in kilometres.
+    #[arg(long, value_name = "KM", default_value_t = 10.0, value_parser = parse_positive)]
+    pub area_length: f64,
+
+    /// How much of the length lies ahead of the point, in percent. 50
+    /// centres the rectangle on the point, 100 puts all of it ahead of you
+    /// and 0 all of it behind you.
+    #[arg(long, value_name = "PERCENT", default_value_t = 50.0, value_parser = parse_percent)]
+    pub area_offset: f64,
 
     /// Compass direction you look in from the point, in degrees. Two edges
-    /// of the square run parallel to it.
+    /// of the rectangle run parallel to it.
     #[arg(long, value_name = "DEGREES", default_value_t = 153.0, value_parser = parse_direction)]
     pub view_direction: f64,
 
@@ -62,7 +72,7 @@ pub struct FilterParams {
     pub max_altitude: i64,
 
     /// Drop an aircraft after this many seconds without a position report,
-    /// in case its signal is lost while inside the square.
+    /// in case its signal is lost while inside the rectangle.
     #[arg(long, value_name = "SECONDS", default_value_t = 30)]
     pub expire: u64,
 
@@ -74,8 +84,12 @@ impl FilterParams {
     pub fn build(&self) -> Filter {
         Filter::new(
             (self.lat, self.lon),
-            self.size,
-            self.view_direction,
+            Area {
+                width_km: self.area_width,
+                length_km: self.area_length,
+                offset_percent: self.area_offset,
+                view_direction_deg: self.view_direction,
+            },
             self.max_altitude,
             Duration::from_secs(self.expire),
         )
@@ -118,6 +132,41 @@ fn parse_positive(s: &str) -> Result<f64, String> {
     }
 }
 
+fn parse_percent(s: &str) -> Result<f64, String> {
+    let number = s.strip_suffix('%').unwrap_or(s);
+    let value: f64 = number
+        .parse()
+        .map_err(|_| format!("`{s}` is not a number"))?;
+    if (0.0..=100.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err("must be between 0 and 100".to_string())
+    }
+}
+
+/// The rectangle on the ground that aircraft have to be over.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Area {
+    /// Edge across the view direction.
+    pub width_km: f64,
+    /// Edge along the view direction.
+    pub length_km: f64,
+    /// Share of the length that lies ahead of the point.
+    pub offset_percent: f64,
+    /// Compass direction the length runs along.
+    pub view_direction_deg: f64,
+}
+
+impl Area {
+    /// Whether a point `along` the view direction and `across` it, both in
+    /// kilometres from the point of interest, lies in the rectangle.
+    fn contains(&self, along: f64, across: f64) -> bool {
+        let ahead = self.length_km * self.offset_percent / 100.0;
+        let behind = self.length_km - ahead;
+        (-behind..=ahead).contains(&along) && across.abs() <= self.width_km / 2.0
+    }
+}
+
 /// Great-circle distance between two points in kilometres (haversine).
 pub fn distance_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
@@ -151,12 +200,12 @@ pub fn format_track(course: f64) -> String {
     format!("{:03}°", if rounded == 0 { 360 } else { rounded })
 }
 
-/// One aircraft's passage through the square, kept only while it is inside.
+/// One aircraft's passage through the rectangle, kept only while it is inside.
 #[derive(Debug, Clone, PartialEq)]
 struct Pass {
-    /// Counts the passes; a lower number entered the square earlier.
+    /// Counts the passes; a lower number entered the rectangle earlier.
     entered: u64,
-    /// Number of positions received inside the square.
+    /// Number of positions received inside the rectangle.
     fixes: u64,
     /// Closest approach to the point so far.
     min_distance_km: f64,
@@ -166,7 +215,7 @@ struct Pass {
     last_fix: Instant,
 }
 
-/// An aircraft currently inside the square, with what it broadcasts.
+/// An aircraft currently inside the rectangle, with what it broadcasts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Flight {
     pub icao: u32,
@@ -179,13 +228,10 @@ pub struct Flight {
     pub info: AircraftInfo,
 }
 
-/// Filter state: which aircraft are inside the square. Pure state, no I/O.
+/// Filter state: which aircraft are inside the rectangle. Pure state, no I/O.
 pub struct Filter {
     center: (f64, f64),
-    /// Edge length of the square.
-    size_km: f64,
-    /// Compass direction two edges of the square are parallel to.
-    view_direction_deg: f64,
+    area: Area,
     max_altitude_ft: i64,
     expire: Duration,
     /// Tracks every aircraft in range and resolves positions.
@@ -200,17 +246,10 @@ pub struct Filter {
 }
 
 impl Filter {
-    pub fn new(
-        center: (f64, f64),
-        size_km: f64,
-        view_direction_deg: f64,
-        max_altitude_ft: i64,
-        expire: Duration,
-    ) -> Self {
+    pub fn new(center: (f64, f64), area: Area, max_altitude_ft: i64, expire: Duration) -> Self {
         Self {
             center,
-            size_km,
-            view_direction_deg,
+            area,
             max_altitude_ft,
             expire,
             tracker: Table::new(TRACKER_EXPIRE),
@@ -232,7 +271,7 @@ impl Filter {
         self.lookup.status()
     }
 
-    /// Aircraft currently inside the square, the one that entered first
+    /// Aircraft currently inside the rectangle, the one that entered first
     /// at the front.
     pub fn flights(&self) -> Vec<Flight> {
         let mut passes: Vec<_> = self.passes.iter().collect();
@@ -259,24 +298,24 @@ impl Filter {
         self.tracker.frames
     }
 
-    /// Aircraft that entered the square since start.
+    /// Aircraft that entered the rectangle since start.
     pub fn total_passes(&self) -> u64 {
         self.total_passes
     }
 
-    pub fn size_km(&self) -> f64 {
-        self.size_km
+    /// Width and length of the rectangle, for status lines.
+    pub fn dimensions(&self) -> String {
+        format!("{} x {} km", self.area.width_km, self.area.length_km)
     }
 
-    /// Whether a point lies in the square: centred on the point of
-    /// interest, with two edges parallel to the view direction.
+    /// Whether a point lies in the rectangle, which has two edges parallel
+    /// to the view direction.
     fn contains(&self, lat: f64, lon: f64) -> bool {
         let (east, north) = offset_km(self.center, lat, lon);
-        let (sin, cos) = self.view_direction_deg.to_radians().sin_cos();
+        let (sin, cos) = self.area.view_direction_deg.to_radians().sin_cos();
         let along = north * cos + east * sin;
         let across = east * cos - north * sin;
-        let half = self.size_km / 2.0;
-        along.abs() <= half && across.abs() <= half
+        self.area.contains(along, across)
     }
 
     pub fn max_altitude_ft(&self) -> i64 {
@@ -288,7 +327,7 @@ impl Filter {
     /// The aircraft is listed for exactly as long as its positions qualify:
     /// the first position outside removes it at once.
     ///
-    /// A position qualifies when it is inside the square and the aircraft is
+    /// A position qualifies when it is inside the rectangle and the aircraft is
     /// at or below the altitude limit. An unknown altitude qualifies: only
     /// surface position reports come without one.
     fn add_position(
@@ -303,7 +342,7 @@ impl Filter {
             && altitude_ft.is_none_or(|alt| alt <= self.max_altitude_ft);
 
         if !qualifies {
-            // Left the square, or climbed above the limit.
+            // Left the rectangle, or climbed above the limit.
             return self.passes.remove(&icao).is_some();
         }
 
@@ -378,11 +417,11 @@ impl View for Filter {
 
     fn draw(&self, frame: &mut Frame, scroll: &mut usize, status: &str, now: Instant) {
         let header = format!(
-            "adsb-flipdot filter | {status} | {:.4},{:.4} {} km square @ {} <= {} ft | {} inside | {} passes | {} frames | {}",
+            "adsb-flipdot filter | {status} | {:.4},{:.4} {} rectangle @ {} <= {} ft | {} inside | {} passes | {} frames | {}",
             self.center.0,
             self.center.1,
-            self.size_km,
-            format_track(self.view_direction_deg),
+            self.dimensions(),
+            format_track(self.area.view_direction_deg),
             self.max_altitude_ft,
             self.passes.len(),
             self.total_passes,
@@ -420,13 +459,13 @@ impl View for Filter {
             header,
             &COLUMNS,
             rows,
-            "no aircraft in the square",
+            "no aircraft in the rectangle",
         );
     }
 
     fn summary(&self) -> String {
         format!(
-            "{} frames received, {} aircraft entered the square",
+            "{} frames received, {} aircraft entered the rectangle",
             self.tracker.frames, self.total_passes
         )
     }
@@ -449,8 +488,18 @@ mod tests {
     const SECS_30: Duration = Duration::from_secs(30);
     const KM_PER_DEG: f64 = 111.195;
 
+    /// A 10 km square centred on the point.
+    fn square(view_direction_deg: f64) -> Area {
+        Area {
+            width_km: 10.0,
+            length_km: 10.0,
+            offset_percent: 50.0,
+            view_direction_deg,
+        }
+    }
+
     fn filter() -> Filter {
-        Filter::new(CENTER, 10.0, 0.0, 5000, SECS_30)
+        Filter::new(CENTER, square(0.0), 5000, SECS_30)
     }
 
     /// A point `east_km` and `north_km` away from the centre.
@@ -484,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn position_inside_square_starts_a_pass() {
+    fn position_inside_rectangle_starts_a_pass() {
         let mut f = filter();
         let now = Instant::now();
         let (lat, lon) = offset(3.0, 0.0);
@@ -508,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn position_outside_square_is_ignored() {
+    fn position_outside_rectangle_is_ignored() {
         let mut f = filter();
         let (lat, lon) = offset(5.2, 0.0);
         assert!(!f.add_position(
@@ -532,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn square_reaches_into_its_corners() {
+    fn rectangle_reaches_into_its_corners() {
         let f = filter();
         assert!(inside(&f, 0.0, 0.0), "the point itself is the centre");
         assert!(inside(&f, 4.9, 4.9), "corner, 6.9 km from the centre");
@@ -542,8 +591,8 @@ mod tests {
     }
 
     #[test]
-    fn square_is_turned_to_the_view_direction() {
-        let f = Filter::new(CENTER, 10.0, 45.0, 5000, SECS_30);
+    fn rectangle_is_turned_to_the_view_direction() {
+        let f = Filter::new(CENTER, square(45.0), 5000, SECS_30);
         // Looking north-east the corners point north, east, south and west.
         assert!(inside(&f, 0.0, 7.0), "north corner");
         assert!(inside(&f, -7.0, 0.0), "west corner");
@@ -552,7 +601,7 @@ mod tests {
         assert!(!inside(&f, 3.7, -3.7), "past the edge to the right");
 
         // The default: 153 degrees, roughly south-south-east.
-        let f = Filter::new(CENTER, 10.0, 153.0, 5000, SECS_30);
+        let f = Filter::new(CENTER, square(153.0), 5000, SECS_30);
         let (sin, cos) = 153f64.to_radians().sin_cos();
         assert!(inside(&f, 4.9 * sin, 4.9 * cos), "4.9 km ahead");
         assert!(!inside(&f, 5.1 * sin, 5.1 * cos), "5.1 km ahead");
@@ -560,6 +609,67 @@ mod tests {
         assert!(inside(&f, 4.9 * cos, -4.9 * sin), "4.9 km to the side");
         assert!(!inside(&f, 5.1 * cos, -5.1 * sin), "5.1 km to the side");
         assert!(!inside(&f, 4.9, 4.9), "no longer a corner");
+    }
+
+    #[test]
+    fn width_and_length_are_set_separately() {
+        // Looking north: 4 km wide, 20 km long.
+        let area = Area {
+            width_km: 4.0,
+            length_km: 20.0,
+            ..square(0.0)
+        };
+        let f = Filter::new(CENTER, area, 5000, SECS_30);
+        assert!(inside(&f, 0.0, 9.9), "9.9 km ahead");
+        assert!(inside(&f, 0.0, -9.9), "9.9 km behind");
+        assert!(!inside(&f, 0.0, 10.1));
+        assert!(inside(&f, 1.9, 0.0), "1.9 km to the side");
+        assert!(!inside(&f, 2.1, 0.0), "2.1 km to the side");
+
+        // Looking east the long edge runs west to east.
+        let f = Filter::new(
+            CENTER,
+            Area {
+                view_direction_deg: 90.0,
+                ..area
+            },
+            5000,
+            SECS_30,
+        );
+        assert!(inside(&f, 9.9, 0.0));
+        assert!(!inside(&f, 0.0, 2.1));
+    }
+
+    #[test]
+    fn offset_shifts_the_rectangle_along_the_view_direction() {
+        let looking_north = |offset_percent| {
+            let area = Area {
+                offset_percent,
+                ..square(0.0)
+            };
+            Filter::new(CENTER, area, 5000, SECS_30)
+        };
+
+        // All of it ahead: the point lies on the near edge.
+        let f = looking_north(100.0);
+        assert!(inside(&f, 0.0, 9.9));
+        assert!(!inside(&f, 0.0, 10.1));
+        assert!(inside(&f, 0.0, 0.0));
+        assert!(!inside(&f, 0.0, -0.1), "nothing behind");
+        assert!(inside(&f, 4.9, 5.0), "the width stays centred");
+        assert!(!inside(&f, 5.1, 5.0));
+
+        // All of it behind.
+        let f = looking_north(0.0);
+        assert!(inside(&f, 0.0, -9.9));
+        assert!(!inside(&f, 0.0, 0.1), "nothing ahead");
+
+        // Three quarters ahead, a quarter behind.
+        let f = looking_north(75.0);
+        assert!(inside(&f, 0.0, 7.4));
+        assert!(!inside(&f, 0.0, 7.6));
+        assert!(inside(&f, 0.0, -2.4));
+        assert!(!inside(&f, 0.0, -2.6));
     }
 
     #[test]
@@ -608,9 +718,9 @@ mod tests {
     }
 
     #[test]
-    fn aircraft_is_listed_exactly_while_inside_the_square() {
+    fn aircraft_is_listed_exactly_while_inside_the_rectangle() {
         let mut f = filter();
-        // Fly west to east straight through the square.
+        // Fly west to east straight through the rectangle.
         assert!(!fly(&mut f, -6.0, 0.0), "approaching: not listed");
         assert!(f.flights().is_empty());
 
@@ -772,8 +882,8 @@ mod tests {
     #[test]
     fn decoded_frames_feed_the_filter() {
         // The reference position pair resolves to 52.2572 N, 3.9194 E at
-        // 38000 ft. Centre the square there and allow that altitude.
-        let mut f = Filter::new((52.2572, 3.9194), 10.0, 0.0, 40000, SECS_30);
+        // 38000 ft. Centre the rectangle there and allow that altitude.
+        let mut f = Filter::new((52.2572, 3.9194), square(0.0), 40000, SECS_30);
         let now = Instant::now();
         assert!(
             !View::update(&mut f, &timed(POS_ODD, 1.0), now),
@@ -789,7 +899,7 @@ mod tests {
         assert_eq!(f.passes.len(), 1);
 
         // Same aircraft, default altitude limit: 38000 ft is filtered out.
-        let mut low = Filter::new((52.2572, 3.9194), 10.0, 0.0, 5000, SECS_30);
+        let mut low = Filter::new((52.2572, 3.9194), square(0.0), 5000, SECS_30);
         View::update(&mut low, &timed(POS_ODD, 1.0), now);
         assert!(!View::update(&mut low, &timed(POS_EVEN, 2.0), now));
         assert!(low.passes.is_empty());
@@ -830,7 +940,7 @@ mod tests {
 
         let lines = screen(&f, &mut 0, start + Duration::from_secs(4), 150, 8);
         assert!(
-            lines[0].contains("53.7271,9.9066 10 km square @ 360° <= 5000 ft"),
+            lines[0].contains("53.7271,9.9066 10 x 10 km rectangle @ 360° <= 5000 ft"),
             "{}",
             lines[0]
         );
@@ -860,7 +970,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l.contains("no aircraft in the square")),
+                .any(|l| l.contains("no aircraft in the rectangle")),
             "{lines:#?}"
         );
     }
@@ -879,24 +989,50 @@ mod tests {
         assert_eq!((args.lat, args.lon), CENTER);
         assert_eq!(
             (
-                args.size,
+                args.area_width,
+                args.area_length,
+                args.area_offset,
                 args.view_direction,
                 args.max_altitude,
                 args.expire
             ),
-            (10.0, 153.0, 5000, 30)
+            (10.0, 10.0, 50.0, 153.0, 5000, 30)
         );
 
-        let args = parse(&["--lat", "-33.9", "--lon", "-151.2", "--size", "0.5"])
-            .unwrap()
-            .args;
-        assert_eq!((args.lat, args.lon, args.size), (-33.9, -151.2, 0.5));
+        let args = parse(&[
+            "--lat",
+            "-33.9",
+            "--lon",
+            "-151.2",
+            "--area-width",
+            "0.5",
+            "--area-length",
+            "3",
+            "--area-offset",
+            "80%",
+        ])
+        .unwrap()
+        .args;
+        assert_eq!((args.lat, args.lon), (-33.9, -151.2));
+        assert_eq!(
+            (args.area_width, args.area_length, args.area_offset),
+            (0.5, 3.0, 80.0)
+        );
 
         assert!(parse(&["--lat", "91"]).is_err());
         assert!(parse(&["--lon", "-181"]).is_err());
-        assert!(parse(&["--size", "0"]).is_err());
-        assert!(parse(&["--size", "-2"]).is_err());
-        assert!(parse(&["--radius", "5"]).is_err(), "renamed to --size");
+        assert!(parse(&["--area-width", "0"]).is_err());
+        assert!(parse(&["--area-length", "-2"]).is_err());
+        assert!(
+            parse(&["--size", "5"]).is_err(),
+            "split into width and length"
+        );
+        assert_eq!(
+            parse(&["--area-offset", "0"]).unwrap().args.area_offset,
+            0.0
+        );
+        assert!(parse(&["--area-offset", "101"]).is_err());
+        assert!(parse(&["--area-offset", "-1"]).is_err());
         assert_eq!(
             parse(&["--view-direction", "0"])
                 .unwrap()

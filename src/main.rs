@@ -45,7 +45,7 @@ enum DebugCommand {
     Record(record::RecordArgs),
     /// Show a continuously updated table with one row per aircraft.
     Live(live::LiveArgs),
-    /// Show aircraft passing a square around a point, below an altitude.
+    /// Show aircraft passing a rectangle around a point, below an altitude.
     Filter(filter::FilterArgs),
     /// Preview text as dots, the way the flipdot panel will show it.
     Flipdot(flipdot::FlipdotArgs),
@@ -135,8 +135,12 @@ mod tests {
         let cli = Cli::try_parse_from([
             "adsb-flipdot",
             "run",
-            "--size",
+            "--area-width",
             "8",
+            "--area-length",
+            "12",
+            "--area-offset",
+            "75",
             "--view-direction",
             "90",
             "--max-altitude",
@@ -153,7 +157,12 @@ mod tests {
         let Command::Run(args) = cli.command else {
             panic!("expected run");
         };
-        assert_eq!((args.filter.size, args.filter.max_altitude), (8.0, 3000));
+        assert_eq!(
+            (args.filter.area_width, args.filter.area_length),
+            (8.0, 12.0)
+        );
+        assert_eq!(args.filter.area_offset, 75.0);
+        assert_eq!(args.filter.max_altitude, 3000);
         assert_eq!(args.filter.view_direction, 90.0);
         assert_eq!((args.filter.lat, args.filter.lon), (53.7271256, 9.9065838));
         assert_eq!(args.display.display_size(), (84, 14));

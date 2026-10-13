@@ -37,7 +37,9 @@
 <text x="727.0" y="648.6" font-size="22" text-anchor="end" font-weight="bold" fill="#1f2a36" stroke="#ffffff" stroke-width="5.5" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">53.7271256° N, 9.9065838° E</text>
 <text x="727.0" y="672.6" font-size="16" text-anchor="end" font-weight="normal" fill="#4a5764" stroke="#ffffff" stroke-width="4.0" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">--lat / --lon</text>
 <text x="787.4" y="525.0" font-size="17" text-anchor="start" font-weight="bold" fill="#1f2a36" stroke="#ffffff" stroke-width="4.2" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">--view-direction 153°</text>
-<text x="890.0" y="918.9" font-size="20" text-anchor="middle" font-weight="bold" fill="#1f2a36" stroke="#ffffff" stroke-width="5.0" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">--size 10 km</text>
+<text x="787.4" y="547.0" font-size="15" text-anchor="start" font-weight="normal" fill="#4a5764" stroke="#ffffff" stroke-width="3.8" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">--area-offset 50 % ahead of the house</text>
+<text x="890.0" y="918.9" font-size="20" text-anchor="middle" font-weight="bold" fill="#1f2a36" stroke="#ffffff" stroke-width="5.0" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">--area-width 10 km</text>
+<text x="1190.3" y="660.8" font-size="20" text-anchor="start" font-weight="bold" fill="#1f2a36" stroke="#ffffff" stroke-width="5.0" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">--area-length 10 km</text>
 <text x="454.3" y="899.0" font-size="20" text-anchor="end" font-weight="bold" fill="#1f2a36" stroke="#ffffff" stroke-width="5.0" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">--max-altitude 5000 ft</text>
 <line x1="210.0" y1="759.1" x2="121.0" y2="851.4" stroke="#1f2a36" stroke-width="2.5"/>
 <polygon points="93.6,879.8 135.6,854.4 106.5,848.3" fill="#1f2a36"/>

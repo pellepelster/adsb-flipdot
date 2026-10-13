@@ -1,7 +1,7 @@
 //! `run`: show aircraft passing the point of interest on the flipdot display.
 //!
 //! Frames go through the same [`Filter`] as `debug filter`. Each aircraft
-//! inside the square is turned into text by one or more [`Template`]s, and
+//! inside the rectangle is turned into text by one or more [`Template`]s, and
 //! the text is laid out by the same [`Scene`] as `debug flipdot`. For now
 //! the display is simulated in the terminal.
 
@@ -57,7 +57,7 @@ struct Page {
 /// template, and how far a scrolling line has moved. Pure state, no I/O.
 ///
 /// Only one aircraft is shown at a time: pages go round its templates
-/// until it has left the square, and only then the one that has been
+/// until it has left the rectangle, and only then the one that has been
 /// inside the longest comes up. A static page shows live values. A scrolling page keeps its
 /// values for one pass, because text that changes under way would jump.
 struct Presenter {
@@ -190,8 +190,8 @@ fn status_line(filter: &Filter, flights: &[Flight], shown: Option<usize>) -> Str
             format!("{}  [{}/{}]", parts.join("  "), index + 1, flights.len())
         }
         None => format!(
-            "no aircraft in the {} km square at or below {} ft  ({} passes, {} frames, {})",
-            filter.size_km(),
+            "no aircraft in the {} rectangle at or below {} ft  ({} passes, {} frames, {})",
+            filter.dimensions(),
             filter.max_altitude_ft(),
             filter.total_passes(),
             filter.frames(),
@@ -299,6 +299,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::Area;
     use crate::template::tests::{anonymous, easyjet};
     use std::time::Duration;
 
@@ -429,7 +430,7 @@ mod tests {
         }
         assert_eq!(seen, ["AAA", "AAA 1/2", "AAA", "AAA 1/2", "AAA"]);
 
-        // Only when AAA has left the square is it the turn of BBB.
+        // Only when AAA has left the rectangle is it the turn of BBB.
         assert!(presenter.step(&flights[1..], &display));
         assert_eq!(lines(&presenter), ["BBB"]);
     }
@@ -579,7 +580,7 @@ mod tests {
         presenter.step(&all, &display);
         assert_eq!(lines(&presenter), ["AAA"]);
 
-        // CCC, which is waiting, leaves the square: nothing changes.
+        // CCC, which is waiting, leaves the rectangle: nothing changes.
         assert!(!presenter.step(&all[..2], &display));
         assert_eq!(lines(&presenter), ["AAA"]);
 
@@ -617,7 +618,17 @@ mod tests {
 
     #[test]
     fn status_line_describes_the_shown_aircraft() {
-        let filter = Filter::new((53.7, 9.9), 10.0, 153.0, 5000, Duration::from_secs(30));
+        let filter = Filter::new(
+            (53.7, 9.9),
+            Area {
+                width_km: 4.0,
+                length_km: 10.0,
+                offset_percent: 50.0,
+                view_direction_deg: 153.0,
+            },
+            5000,
+            Duration::from_secs(30),
+        );
         let flights = [easyjet(), anonymous(0xabc123)];
         assert_eq!(
             status_line(&filter, &flights, Some(0)),
@@ -629,7 +640,7 @@ mod tests {
         );
         assert_eq!(
             status_line(&filter, &[], None),
-            "no aircraft in the 10 km square at or below 5000 ft  (0 passes, 0 frames, aircraft db off)"
+            "no aircraft in the 4 x 10 km rectangle at or below 5000 ft  (0 passes, 0 frames, aircraft db off)"
         );
     }
 }

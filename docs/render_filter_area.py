@@ -15,7 +15,9 @@ import math
 from pathlib import Path
 
 LAT, LON = 53.7271256, 9.9065838
-SIZE_KM = 10.0
+AREA_WIDTH_KM = 10.0
+AREA_LENGTH_KM = 10.0
+AREA_OFFSET_PERCENT = 50.0
 VIEW_DIRECTION = 153.0
 MAX_ALTITUDE_FT = 5000
 
@@ -198,9 +200,11 @@ text(ax, min(project(p)[1] for p in ends) - 34, "Hamburg Airport (HAM)", size=21
 
 # --- box --------------------------------------------------------------------
 
-half = SIZE_KM / 2
+half = AREA_WIDTH_KM / 2
+ahead = AREA_LENGTH_KM * AREA_OFFSET_PERCENT / 100
+behind = AREA_LENGTH_KM - ahead
 top = MAX_ALTITUDE_FT * KM_PER_FOOT
-corners = [(-half, -half), (half, -half), (half, half), (-half, half)]
+corners = [(-half, -behind), (half, -behind), (half, ahead), (-half, ahead)]
 floor = [local(r, a) for r, a in corners]
 roof = [local(r, a, top) for r, a in corners]
 sides = [[floor[i], floor[(i + 1) % 4], roof[(i + 1) % 4], roof[i]] for i in range(4)]
@@ -210,7 +214,7 @@ BOX_EDGE = "#d89a00"
 
 def faces_camera(face):
     c = centroid(face)
-    outward = sub(c, local(0.0, 0.0, c[2]))
+    outward = sub(c, local(0.0, (ahead - behind) / 2, c[2]))
     return dot(outward, sub(CAMERA, c)) > 0
 
 
@@ -279,9 +283,13 @@ text(lx, ly + 24, "--lat / --lon", size=16, anchor="end", fill="#4a5764")
 
 vx, vy = project(local(0.0, 3.6))
 text(vx + 16, vy + 4, f"--view-direction {VIEW_DIRECTION:g}°", size=17, fill="#1f2a36", weight="bold")
+text(vx + 16, vy + 26, f"--area-offset {AREA_OFFSET_PERCENT:g} % ahead of the house", size=15, fill="#4a5764")
 
 (x1, y1), (x2, y2) = project(floor[0]), project(floor[1])
-text((x1 + x2) / 2, (y1 + y2) / 2 + 34, f"--size {SIZE_KM:g} km", size=20, anchor="middle", weight="bold")
+text((x1 + x2) / 2, (y1 + y2) / 2 + 34, f"--area-width {AREA_WIDTH_KM:g} km", size=20, anchor="middle", weight="bold")
+
+(x1, y1), (x2, y2) = project(floor[1]), project(floor[2])
+text((x1 + x2) / 2 + 18, (y1 + y2) / 2 + 22, f"--area-length {AREA_LENGTH_KM:g} km", size=20, weight="bold")
 
 (x1, y1), (x2, y2) = project(floor[0]), project(roof[0])
 text(x1 - 16, (y1 + y2) / 2 + 6, f"--max-altitude {MAX_ALTITUDE_FT} ft", size=20, anchor="end", weight="bold")

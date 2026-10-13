@@ -100,13 +100,13 @@ pub const CODES: &[CodeInfo] = &[
     CodeInfo {
         code: Code::Index,
         name: "index",
-        description: "Position of this aircraft among those in the square",
+        description: "Position of this aircraft among those in the rectangle",
         example: "1",
     },
     CodeInfo {
         code: Code::Count,
         name: "count",
-        description: "Number of aircraft in the square",
+        description: "Number of aircraft in the rectangle",
         example: "2",
     },
 ];
@@ -208,7 +208,7 @@ impl Template {
     }
 
     /// Fill in the template for `flight`, which is number `index` (from 0)
-    /// of `count` aircraft in the square.
+    /// of `count` aircraft in the rectangle.
     ///
     /// Unknown values are left out, and the spaces around them are closed
     /// up, so `{{ aircraft_code }} {{ track }}` never starts with a gap.
@@ -447,7 +447,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn index_and_count_describe_the_position_in_the_square() {
+    fn index_and_count_describe_the_position_in_the_rectangle() {
         let template = Template::parse("{{ index }}/{{ count }}").unwrap();
         assert_eq!(template.render(&easyjet(), 0, 3).lines, ["1/3"]);
         assert_eq!(template.render(&easyjet(), 2, 3).lines, ["3/3"]);
