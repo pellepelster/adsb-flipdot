@@ -1,15 +1,16 @@
-//! Shared terminal UI: a scrollable table fed by the frame stream.
+//! Shared terminal UI: the terminal in full-screen mode with its keys, and
+//! a scrollable table fed by the frame stream.
 
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
+use ratatui::{DefaultTerminal, Frame};
 use rs1090::decode::TimedMessage;
 
 use crate::shutdown::Shutdown;
@@ -23,6 +24,74 @@ const IDLE_REDRAW: Duration = Duration::from_secs(1);
 const FRESH: Duration = Duration::from_secs(1);
 /// Rows scrolled per PageUp / PageDown.
 const PAGE: usize = 10;
+
+/// What the user did at the terminal.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Input {
+    /// q, Esc or Ctrl-C, or the terminal is gone.
+    Quit,
+    /// Any other key.
+    Key(KeyCode),
+    /// The window has a new size.
+    Resize,
+    /// Nothing a command reacts to.
+    Other,
+}
+
+fn input(event: &Event) -> Input {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => Input::Quit,
+            // Raw mode turns Ctrl-C into a plain key press instead of SIGINT.
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Input::Quit,
+            code => Input::Key(code),
+        },
+        Event::Resize(..) => Input::Resize,
+        _ => Input::Other,
+    }
+}
+
+/// The terminal in raw mode on the alternate screen. It is restored when
+/// this is dropped, also when a command returns an error.
+pub(crate) struct Screen {
+    terminal: DefaultTerminal,
+    events: EventStream,
+}
+
+impl Screen {
+    pub(crate) fn open() -> Result<Self> {
+        // `try_init` enters raw mode and the alternate screen, and installs
+        // a panic hook that restores the terminal.
+        let terminal =
+            ratatui::try_init().context("cannot set up the terminal (is stdout a TTY?)")?;
+        Ok(Self {
+            terminal,
+            events: EventStream::new(),
+        })
+    }
+
+    pub(crate) fn draw(&mut self, draw: impl FnOnce(&mut Frame)) -> Result<()> {
+        self.terminal
+            .draw(draw)
+            .context("cannot draw to the terminal")?;
+        Ok(())
+    }
+
+    /// Wait for the next thing the user does. Cancel safe.
+    pub(crate) async fn input(&mut self) -> Result<Input> {
+        match self.events.next().await {
+            Some(Ok(event)) => Ok(input(&event)),
+            Some(Err(e)) => Err(e).context("terminal input failed"),
+            None => Ok(Input::Quit),
+        }
+    }
+}
+
+impl Drop for Screen {
+    fn drop(&mut self) {
+        ratatui::restore();
+    }
+}
 
 /// A table column: title, width in characters, right aligned.
 pub type Column = (&'static str, u16, bool);
@@ -55,7 +124,8 @@ pub fn opt<T>(value: Option<T>, f: impl FnOnce(T) -> String) -> String {
     value.map(f).unwrap_or_default()
 }
 
-fn cell(text: String, column: &Column) -> Cell<'static> {
+/// One cell of a table, aligned like its column.
+pub(crate) fn cell(text: String, column: &Column) -> Cell<'static> {
     let line = Line::from(text);
     Cell::from(if column.2 { line.right_aligned() } else { line })
 }
@@ -115,54 +185,18 @@ pub fn draw_table(
     );
 }
 
-/// What a key press asks the event loop to do.
-#[derive(Debug, PartialEq, Eq)]
-enum Action {
-    Quit,
-    Redraw,
-    None,
-}
-
-fn handle_event(event: &Event, scroll: &mut usize) -> Action {
-    match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
-            // Raw mode turns Ctrl-C into a plain key press instead of SIGINT.
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
-            KeyCode::Down | KeyCode::Char('j') => {
-                *scroll = scroll.saturating_add(1);
-                Action::Redraw
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                *scroll = scroll.saturating_sub(1);
-                Action::Redraw
-            }
-            KeyCode::PageDown => {
-                *scroll = scroll.saturating_add(PAGE);
-                Action::Redraw
-            }
-            KeyCode::PageUp => {
-                *scroll = scroll.saturating_sub(PAGE);
-                Action::Redraw
-            }
-            KeyCode::Home => {
-                *scroll = 0;
-                Action::Redraw
-            }
-            _ => Action::None,
-        },
-        Event::Resize(..) => Action::Redraw,
-        _ => Action::None,
-    }
-}
-
-/// Restores the terminal when dropped, also when `run` returns an error.
-pub(crate) struct TerminalGuard;
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        ratatui::restore();
-    }
+/// Move the scroll position if `key` is a scroll key. Returns whether it
+/// was one.
+fn scroll_by(key: KeyCode, scroll: &mut usize) -> bool {
+    *scroll = match key {
+        KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1),
+        KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
+        KeyCode::PageDown => scroll.saturating_add(PAGE),
+        KeyCode::PageUp => scroll.saturating_sub(PAGE),
+        KeyCode::Home => 0,
+        _ => return false,
+    };
+    true
 }
 
 /// Open the frame source and show `view` until the user quits or the source
@@ -173,13 +207,7 @@ pub async fn run(source: &SourceArgs, view: &mut impl View) -> Result<()> {
     let status = stream.description().to_string();
     let mut scroll = 0usize;
 
-    // `try_init` enters raw mode and the alternate screen, and installs a
-    // panic hook that restores the terminal.
-    let mut terminal =
-        ratatui::try_init().context("cannot set up the terminal (is stdout a TTY?)")?;
-    let guard = TerminalGuard;
-
-    let mut events = EventStream::new();
+    let mut screen = Screen::open()?;
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -193,22 +221,17 @@ pub async fn run(source: &SourceArgs, view: &mut impl View) -> Result<()> {
                 Some(msg) => dirty |= view.update(&msg, Instant::now()),
                 None => break,
             },
-            event = events.next() => match event {
-                Some(Ok(event)) => match handle_event(&event, &mut scroll) {
-                    Action::Quit => break,
-                    Action::Redraw => dirty = true,
-                    Action::None => {}
-                },
-                Some(Err(e)) => return Err(e).context("terminal input failed"),
-                None => break,
+            input = screen.input() => match input? {
+                Input::Quit => break,
+                Input::Key(key) => dirty |= scroll_by(key, &mut scroll),
+                Input::Resize => dirty = true,
+                Input::Other => {}
             },
             _ = tick.tick() => {
                 let now = Instant::now();
                 dirty |= view.expire(now);
                 if dirty || now.duration_since(last_draw) >= IDLE_REDRAW {
-                    terminal
-                        .draw(|frame| view.draw(frame, &mut scroll, &status, now))
-                        .context("cannot draw to the terminal")?;
+                    screen.draw(|frame| view.draw(frame, &mut scroll, &status, now))?;
                     dirty = false;
                     last_draw = now;
                 }
@@ -216,7 +239,7 @@ pub async fn run(source: &SourceArgs, view: &mut impl View) -> Result<()> {
         }
     }
 
-    drop(guard);
+    drop(screen);
     let result = stream.close().await;
     eprintln!("adsb-flipdot: {}", view.summary());
     result
@@ -257,47 +280,42 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn keys_quit_and_scroll() {
-        use crossterm::event::KeyEvent;
-        let key = |code, modifiers| Event::Key(KeyEvent::new(code, modifiers));
+    fn q_esc_and_ctrl_c_quit() {
+        use crossterm::event::{KeyEvent, KeyEventKind};
+        let key = |code, modifiers| input(&Event::Key(KeyEvent::new(code, modifiers)));
         let none = KeyModifiers::NONE;
-        let ctrl = KeyModifiers::CONTROL;
+
+        assert_eq!(key(KeyCode::Char('q'), none), Input::Quit);
+        assert_eq!(key(KeyCode::Esc, none), Input::Quit);
+        assert_eq!(key(KeyCode::Char('c'), KeyModifiers::CONTROL), Input::Quit);
+        assert_eq!(
+            key(KeyCode::Char('c'), none),
+            Input::Key(KeyCode::Char('c'))
+        );
+        assert_eq!(key(KeyCode::Down, none), Input::Key(KeyCode::Down));
+        assert_eq!(input(&Event::Resize(80, 24)), Input::Resize);
+        assert_eq!(input(&Event::FocusGained), Input::Other);
+
+        // A key counts when it goes down, not when it comes up again.
+        let release = KeyEvent::new_with_kind(KeyCode::Char('q'), none, KeyEventKind::Release);
+        assert_eq!(input(&Event::Key(release)), Input::Other);
+    }
+
+    #[test]
+    fn keys_scroll() {
         let mut scroll = 0;
-
-        assert_eq!(
-            handle_event(&key(KeyCode::Char('q'), none), &mut scroll),
-            Action::Quit
-        );
-        assert_eq!(
-            handle_event(&key(KeyCode::Esc, none), &mut scroll),
-            Action::Quit
-        );
-        assert_eq!(
-            handle_event(&key(KeyCode::Char('c'), ctrl), &mut scroll),
-            Action::Quit
-        );
-        assert_eq!(
-            handle_event(&key(KeyCode::Char('c'), none), &mut scroll),
-            Action::None
-        );
-
-        assert_eq!(
-            handle_event(&key(KeyCode::Down, none), &mut scroll),
-            Action::Redraw
-        );
+        assert!(scroll_by(KeyCode::Down, &mut scroll));
         assert_eq!(scroll, 1);
-        handle_event(&key(KeyCode::PageDown, none), &mut scroll);
+        assert!(scroll_by(KeyCode::PageDown, &mut scroll));
         assert_eq!(scroll, 11);
-        handle_event(&key(KeyCode::Up, none), &mut scroll);
+        assert!(scroll_by(KeyCode::Char('k'), &mut scroll));
         assert_eq!(scroll, 10);
-        handle_event(&key(KeyCode::Home, none), &mut scroll);
+        assert!(scroll_by(KeyCode::Home, &mut scroll));
         assert_eq!(scroll, 0);
-        handle_event(&key(KeyCode::Up, none), &mut scroll);
+        assert!(scroll_by(KeyCode::Up, &mut scroll));
         assert_eq!(scroll, 0, "does not underflow");
 
-        assert_eq!(
-            handle_event(&Event::Resize(80, 24), &mut scroll),
-            Action::Redraw
-        );
+        assert!(!scroll_by(KeyCode::Char('x'), &mut scroll));
+        assert_eq!(scroll, 0);
     }
 }

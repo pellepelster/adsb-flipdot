@@ -4,35 +4,25 @@
 //! address and direction lines are toggled; the COL-SEL lines are pulsed.
 //! The rules are those of [`Board`], shared with the panel output.
 
-use std::path::PathBuf;
-use std::time::Duration;
-
 use anyhow::{Context, Result};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
-use futures_util::StreamExt;
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Cell, Row, Table};
+use ratatui::widgets::{Row, Table};
 
 use crate::board::{
-    Board, COL_ADDRESS, GpioPins, MAX_COLUMNS, MAX_ROWS, NoPins, OVERRUN_FACTOR, Pins, ROW_ADDRESS,
-    SIGNALS, enable_realtime, line_number, micros,
+    Board, BoardArgs, COL_ADDRESS, MAX_COLUMNS, MAX_ROWS, NoPins, OVERRUN_FACTOR, Pins,
+    ROW_ADDRESS, SIGNALS, line_number, micros,
 };
 use crate::shutdown::Shutdown;
-use crate::tui::TerminalGuard;
+use crate::tui::{Column, Input, Screen, cell};
 
 #[derive(clap::Args, Debug)]
 pub struct PiArgs {
-    /// GPIO character device of the Pi's header pins.
-    #[arg(long, value_name = "PATH", default_value = "/dev/gpiochip0")]
-    pub chip: PathBuf,
-
-    /// Length of a COL-SEL pulse, in microseconds.
-    #[arg(long, value_name = "MICROSECONDS", default_value_t = 190,
-          value_parser = clap::value_parser!(u32).range(1..=25_000))]
-    pub pulse_us: u32,
+    #[command(flatten)]
+    pub board: BoardArgs,
 
     /// Touch no pin, to try the interface away from the Pi.
     #[arg(long)]
@@ -46,37 +36,26 @@ fn describe_address(what: &str, address: u8, max: u32) -> String {
     }
 }
 
-/// What a key press asks the event loop to do.
+/// What a key asks for.
 #[derive(Debug, PartialEq, Eq)]
 enum Action {
-    Quit,
     Up,
     Down,
     Press,
     AllLow,
-    Redraw,
-    None,
 }
 
-fn handle_event(event: &Event) -> Action {
-    match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
-            // Raw mode turns Ctrl-C into a plain key press instead of SIGINT.
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::Quit,
-            KeyCode::Up | KeyCode::Char('k') => Action::Up,
-            KeyCode::Down | KeyCode::Char('j') => Action::Down,
-            KeyCode::Char(' ') | KeyCode::Enter => Action::Press,
-            KeyCode::Char('0') => Action::AllLow,
-            _ => Action::None,
-        },
-        Event::Resize(..) => Action::Redraw,
-        _ => Action::None,
+fn action(key: KeyCode) -> Option<Action> {
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => Some(Action::Up),
+        KeyCode::Down | KeyCode::Char('j') => Some(Action::Down),
+        KeyCode::Char(' ') | KeyCode::Enter => Some(Action::Press),
+        KeyCode::Char('0') => Some(Action::AllLow),
+        _ => None,
     }
 }
 
-/// Title, width in characters, right aligned.
-const COLUMNS: [(&str, u16, bool); 6] = [
+const COLUMNS: [Column; 6] = [
     ("SIGNAL", 8, false),
     ("GPIO", 4, true),
     ("PI PIN", 6, true),
@@ -102,11 +81,7 @@ fn draw<P: Pins>(frame: &mut Frame, board: &Board<P>, selected: usize, status: &
         header_area,
     );
 
-    let cell = |text: String, right: bool| {
-        let line = Line::from(text);
-        Cell::from(if right { line.right_aligned() } else { line })
-    };
-    let titles = Row::new(COLUMNS.iter().map(|c| cell(c.0.to_string(), c.2)))
+    let titles = Row::new(COLUMNS.iter().map(|c| cell(c.0.to_string(), c)))
         .style(Style::new().add_modifier(Modifier::REVERSED));
     let rows = SIGNALS.iter().enumerate().map(|(index, signal)| {
         let high = board.levels[index];
@@ -125,8 +100,8 @@ fn draw<P: Pins>(frame: &mut Frame, board: &Board<P>, selected: usize, status: &
         Row::new(
             cells
                 .into_iter()
-                .zip(COLUMNS)
-                .map(|(text, column)| cell(text, column.2)),
+                .zip(&COLUMNS)
+                .map(|(text, column)| cell(text, column)),
         )
         .style(style)
     });
@@ -168,57 +143,45 @@ fn draw<P: Pins>(frame: &mut Frame, board: &Board<P>, selected: usize, status: &
 /// Show the board until the user quits. Every line is low afterwards.
 async fn show<P: Pins>(mut board: Board<P>, status: &str) -> Result<()> {
     let mut shutdown = Shutdown::listen()?;
-    // `try_init` enters raw mode and the alternate screen, and installs a
-    // panic hook that restores the terminal.
-    let mut terminal =
-        ratatui::try_init().context("cannot set up the terminal (is stdout a TTY?)")?;
-    let guard = TerminalGuard;
-
-    let mut events = EventStream::new();
+    let mut screen = Screen::open()?;
 
     let mut selected = 0usize;
     loop {
-        terminal
-            .draw(|frame| draw(frame, &board, selected, status))
-            .context("cannot draw to the terminal")?;
+        screen.draw(|frame| draw(frame, &board, selected, status))?;
         tokio::select! {
             // Signals sent from outside, e.g. `kill`.
             _ = shutdown.recv() => break,
-            event = events.next() => match event {
-                Some(Ok(event)) => match handle_event(&event) {
-                    Action::Quit => break,
-                    Action::Up => selected = selected.saturating_sub(1),
-                    Action::Down => selected = (selected + 1).min(SIGNALS.len() - 1),
-                    Action::Press => board.press(selected)?,
-                    Action::AllLow => board.all_low()?,
-                    Action::Redraw | Action::None => {}
+            input = screen.input() => match input? {
+                Input::Quit => break,
+                Input::Key(key) => match action(key) {
+                    Some(Action::Up) => selected = selected.saturating_sub(1),
+                    Some(Action::Down) => selected = (selected + 1).min(SIGNALS.len() - 1),
+                    Some(Action::Press) => board.press(selected)?,
+                    Some(Action::AllLow) => board.all_low()?,
+                    None => {}
                 },
-                Some(Err(e)) => return Err(e).context("terminal input failed"),
-                None => break,
+                Input::Resize | Input::Other => {}
             },
         }
     }
 
-    drop(guard);
+    drop(screen);
     let result = board.all_low();
     eprintln!("adsb-flipdot: {}; all lines low", board.pulse_report());
     result
 }
 
 pub async fn run(args: PiArgs) -> Result<()> {
-    let pulse = Duration::from_micros(args.pulse_us.into());
     if args.dry_run {
-        return show(Board::new(NoPins, pulse)?, "dry run, no pin is touched").await;
+        let board = Board::new(NoPins, args.board.pulse())?;
+        return show(board, "dry run, no pin is touched").await;
     }
-    let pins = GpioPins::open(&args.chip)
+    let (board, priority) = args
+        .board
+        .open()
         .context("cannot use the adapter board (--dry-run needs no pins)")?;
-    let priority = if enable_realtime() {
-        "real-time priority"
-    } else {
-        "normal priority, pulses may run long (run as root for real-time priority)"
-    };
-    let status = format!("{} | {priority}", args.chip.display());
-    show(Board::new(pins, pulse)?, &status).await
+    let status = format!("{} | {priority}", args.board.chip.display());
+    show(board, &status).await
 }
 
 #[cfg(test)]
@@ -245,21 +208,13 @@ mod tests {
     }
 
     #[test]
-    fn keys_select_press_and_quit() {
-        use crossterm::event::KeyEvent;
-        let key = |code, modifiers| handle_event(&Event::Key(KeyEvent::new(code, modifiers)));
-        let none = KeyModifiers::NONE;
-
-        assert_eq!(key(KeyCode::Char('q'), none), Action::Quit);
-        assert_eq!(key(KeyCode::Esc, none), Action::Quit);
-        assert_eq!(key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Quit);
-        assert_eq!(key(KeyCode::Char('c'), none), Action::None);
-        assert_eq!(key(KeyCode::Up, none), Action::Up);
-        assert_eq!(key(KeyCode::Char('j'), none), Action::Down);
-        assert_eq!(key(KeyCode::Char(' '), none), Action::Press);
-        assert_eq!(key(KeyCode::Enter, none), Action::Press);
-        assert_eq!(key(KeyCode::Char('0'), none), Action::AllLow);
-        assert_eq!(handle_event(&Event::Resize(80, 24)), Action::Redraw);
+    fn keys_select_and_press() {
+        assert_eq!(action(KeyCode::Up), Some(Action::Up));
+        assert_eq!(action(KeyCode::Char('j')), Some(Action::Down));
+        assert_eq!(action(KeyCode::Char(' ')), Some(Action::Press));
+        assert_eq!(action(KeyCode::Enter), Some(Action::Press));
+        assert_eq!(action(KeyCode::Char('0')), Some(Action::AllLow));
+        assert_eq!(action(KeyCode::Char('x')), None);
     }
 
     #[test]

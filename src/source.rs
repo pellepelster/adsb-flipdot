@@ -18,6 +18,8 @@ use rs1090::source::iqread;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+use crate::parse;
+
 /// ADS-B downlink frequency in Hz.
 const CENTER_FREQ_HZ: u32 = 1_090_000_000;
 /// Sample rate the rs1090 demodulator expects. 6 MS/s also exists but is too
@@ -62,21 +64,12 @@ pub struct SourceArgs {
 
     /// Replay the recording this many times faster than it was recorded.
     #[arg(long, value_name = "FACTOR", default_value_t = 1.0,
-          value_parser = parse_speed, requires = "device_record_file")]
+          value_parser = parse::positive, requires = "device_record_file")]
     pub device_record_speed: f64,
 
     /// Start the recording over when it ends, instead of stopping.
     #[arg(long, requires = "device_record_file")]
     pub device_record_loop: bool,
-}
-
-fn parse_speed(s: &str) -> Result<f64, String> {
-    let value: f64 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
-    if value.is_finite() && value > 0.0 {
-        Ok(value)
-    } else {
-        Err("must be greater than 0".to_string())
-    }
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -113,75 +106,12 @@ impl FrameStream {
     /// Open the source and start demodulating on a background task.
     pub async fn open(args: &SourceArgs) -> Result<Self> {
         let (tx, rx) = mpsc::channel::<TimedMessage>(1024);
-        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-
-        if let Some(path) = &args.device_record_file {
-            let frames = read_recording(path)?;
-            let description = format!(
-                "replaying {} ({} frames, {:.0} s{}{})",
-                path.display(),
-                frames.len(),
-                recording_span(&frames),
-                if args.device_record_speed == 1.0 {
-                    String::new()
-                } else {
-                    format!(", {}x speed", args.device_record_speed)
-                },
-                if args.device_record_loop {
-                    ", looping"
-                } else {
-                    ""
-                },
-            );
-            let (speed, looping) = (args.device_record_speed, args.device_record_loop);
-            let handle = tokio::spawn(async move {
-                tokio::select! {
-                    _ = replay(tx, frames, speed, looping) => {}
-                    _ = shutdown_rx.changed() => {}
-                }
-                Ok(())
-            });
-            return Ok(Self {
-                rx,
-                shutdown_tx,
-                handle,
-                live: false,
-                description,
-                last: None,
-            });
-        }
-
-        let live = args.file.is_none();
-        let mut source = open_source(args).await?;
-
-        // `receiver` borrows `source` only while it runs, so after the select
-        // the SDR can still be stopped.
-        let handle = tokio::spawn(async move {
-            let result = tokio::select! {
-                r = iqread::receiver(tx, &mut source, 0, SAMPLE_RATE_HZ as f64, None) => r,
-                _ = shutdown_rx.changed() => Ok(()),
-            };
-            if live {
-                // Tear down USB transfers deterministically before exit.
-                let _ = tokio::time::timeout(Duration::from_secs(2), source.stop()).await;
-            }
-            result
-        });
-
-        let description = match &args.file {
-            Some(path) => format!("replaying {}", path.display()),
-            None => format!(
-                "{:.3} MHz at {:.1} MS/s, gain {}",
-                CENTER_FREQ_HZ as f64 / 1e6,
-                SAMPLE_RATE_HZ as f64 / 1e6,
-                if args.agc {
-                    "auto".to_string()
-                } else {
-                    format!("{:.1} dB", args.gain as f64 / 10.0)
-                }
-            ),
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let live = args.device_record_file.is_none() && args.file.is_none();
+        let (handle, description) = match &args.device_record_file {
+            Some(path) => start_replay(args, path, tx, shutdown_rx)?,
+            None => start_receiver(args, live, tx, shutdown_rx).await?,
         };
-
         Ok(Self {
             rx,
             shutdown_tx,
@@ -221,6 +151,85 @@ impl FrameStream {
             Err(e) => Err(anyhow::Error::new(e).context("receiver failed")),
         }
     }
+}
+
+/// The background task that feeds the frames, and a description of where
+/// they come from.
+type Started = (JoinHandle<Result<(), desperado::Error>>, String);
+
+/// Replay the recording at `path` until it ends or `shutdown` changes.
+fn start_replay(
+    args: &SourceArgs,
+    path: &Path,
+    tx: mpsc::Sender<TimedMessage>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<Started> {
+    let frames = read_recording(path)?;
+    let description = format!(
+        "replaying {} ({} frames, {:.0} s{}{})",
+        path.display(),
+        frames.len(),
+        recording_span(&frames),
+        if args.device_record_speed == 1.0 {
+            String::new()
+        } else {
+            format!(", {}x speed", args.device_record_speed)
+        },
+        if args.device_record_loop {
+            ", looping"
+        } else {
+            ""
+        },
+    );
+    let (speed, looping) = (args.device_record_speed, args.device_record_loop);
+    let handle = tokio::spawn(async move {
+        tokio::select! {
+            _ = replay(tx, frames, speed, looping) => {}
+            _ = shutdown.changed() => {}
+        }
+        Ok(())
+    });
+    Ok((handle, description))
+}
+
+/// Demodulate the dongle, or an IQ file if `live` is false, until the source
+/// ends or `shutdown` changes.
+async fn start_receiver(
+    args: &SourceArgs,
+    live: bool,
+    tx: mpsc::Sender<TimedMessage>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<Started> {
+    let mut source = open_source(args).await?;
+
+    // `receiver` borrows `source` only while it runs, so after the select
+    // the SDR can still be stopped.
+    let handle = tokio::spawn(async move {
+        let result = tokio::select! {
+            r = iqread::receiver(tx, &mut source, 0, SAMPLE_RATE_HZ as f64, None) => r,
+            _ = shutdown.changed() => Ok(()),
+        };
+        if live {
+            // Tear down USB transfers deterministically before exit.
+            let _ = tokio::time::timeout(Duration::from_secs(2), source.stop()).await;
+        }
+        result
+    });
+
+    let description = match &args.file {
+        Some(path) => format!("replaying {}", path.display()),
+        None => format!(
+            "{:.3} MHz at {:.1} MS/s, gain {}",
+            CENTER_FREQ_HZ as f64 / 1e6,
+            SAMPLE_RATE_HZ as f64 / 1e6,
+            if args.agc {
+                "auto".to_string()
+            } else {
+                format!("{:.1} dB", args.gain as f64 / 10.0)
+            }
+        ),
+    };
+    Ok((handle, description))
 }
 
 async fn open_source(args: &SourceArgs) -> Result<IqAsyncSource> {

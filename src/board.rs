@@ -7,7 +7,7 @@
 //! shared by the panel output and `debug pi`.
 
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -17,6 +17,40 @@ use gpiocdev::line::Value;
 const REALTIME_PRIORITY: libc::c_int = 50;
 /// A pulse this many times longer than asked for counts as an overrun.
 pub(crate) const OVERRUN_FACTOR: u32 = 2;
+
+/// How to reach the adapter board. Shared by the panel output and
+/// `debug pi`.
+#[derive(clap::Args, Debug)]
+pub struct BoardArgs {
+    /// GPIO character device of the Pi's header pins.
+    #[arg(long, value_name = "PATH", default_value = "/dev/gpiochip0")]
+    pub chip: PathBuf,
+
+    /// Length of the COL-SEL pulse that flips one dot, in microseconds.
+    #[arg(long, value_name = "MICROSECONDS", default_value_t = 190,
+          value_parser = clap::value_parser!(u32).range(1..=25_000))]
+    pub pulse_us: u32,
+}
+
+impl BoardArgs {
+    /// Length of a pulse.
+    pub(crate) fn pulse(&self) -> Duration {
+        Duration::from_micros(self.pulse_us.into())
+    }
+
+    /// Take the pins of the board. The calling thread gets real-time
+    /// priority where the system allows it, because it is the one that
+    /// times the pulses. Returns the board and, in words, the priority.
+    pub(crate) fn open(&self) -> Result<(Board<GpioPins>, &'static str)> {
+        let pins = GpioPins::open(&self.chip)?;
+        let priority = if enable_realtime() {
+            "real-time priority"
+        } else {
+            "normal priority, pulses may run long (run as root for real-time priority)"
+        };
+        Ok((Board::new(pins, self.pulse())?, priority))
+    }
+}
 
 /// How a signal is driven.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +164,7 @@ pub(crate) struct GpioPins(gpiocdev::Request);
 
 impl GpioPins {
     /// Take every signal's line as an output, low.
-    pub(crate) fn open(chip: &Path) -> Result<Self> {
+    fn open(chip: &Path) -> Result<Self> {
         let lines: Vec<u32> = SIGNALS.iter().map(|signal| signal.gpio).collect();
         let request = gpiocdev::Request::builder()
             .on_chip(chip)
@@ -224,9 +258,6 @@ impl<P: Pins> Board<P> {
     }
 
     /// Raise a line for the pulse length and lower it again.
-    ///
-    /// The wait is a busy loop: a sleep hands the CPU to the scheduler, which
-    /// may return it much later.
     fn pulse(&mut self, index: usize) -> Result<()> {
         let gpio = SIGNALS[index].gpio;
         if let Err(error) = self.pins.set(gpio, true) {
@@ -235,9 +266,7 @@ impl<P: Pins> Board<P> {
             return Err(error);
         }
         let raised = Instant::now();
-        while raised.elapsed() < self.pulse {
-            std::hint::spin_loop();
-        }
+        spin_until(raised + self.pulse);
         let lowered = self.pins.set(gpio, false);
         let length = raised.elapsed();
         lowered?;
@@ -296,11 +325,7 @@ impl<P: Pins> Board<P> {
         self.put_address(ROW_ADDRESS, row)?;
         self.put_address(COL_ADDRESS, column)?;
         self.pulse(select)?;
-
-        let lowered = Instant::now();
-        while lowered.elapsed() < PULSE_GAP {
-            std::hint::spin_loop();
-        }
+        spin_until(Instant::now() + PULSE_GAP);
         Ok(())
     }
 
@@ -384,10 +409,18 @@ pub(crate) fn micros(duration: Option<Duration>) -> String {
     }
 }
 
+/// Wait for a point in time that is microseconds away. A busy loop: a sleep
+/// hands the CPU to the scheduler, which may return it much later.
+fn spin_until(deadline: Instant) {
+    while Instant::now() < deadline {
+        std::hint::spin_loop();
+    }
+}
+
 /// Give the calling thread real-time priority, so that ordinary processes
 /// cannot interrupt a pulse, and keep its memory in RAM. Returns false when
 /// the system does not allow it.
-pub(crate) fn enable_realtime() -> bool {
+fn enable_realtime() -> bool {
     // SAFETY: `sched_param` is plain data for which all zeroes is valid.
     let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
     param.sched_priority = REALTIME_PRIORITY;

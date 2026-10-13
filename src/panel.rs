@@ -7,13 +7,10 @@
 //! that shows the frame, which is busy for about a quarter of a millisecond
 //! per dot.
 
-use std::path::PathBuf;
-use std::time::Duration;
-
 use anyhow::{Result, bail};
 use clap::ValueEnum;
 
-use crate::board::{Board, GpioPins, MAX_COLUMNS, MAX_PANELS, MAX_ROWS, Pins, enable_realtime};
+use crate::board::{Board, BoardArgs, GpioPins, MAX_COLUMNS, MAX_PANELS, MAX_ROWS, Pins};
 use crate::display::{Flip, Note, Output};
 
 #[derive(clap::Args, Debug)]
@@ -23,14 +20,8 @@ pub struct PanelArgs {
     #[arg(long)]
     pub gpio: bool,
 
-    /// GPIO character device of the Pi's header pins.
-    #[arg(long, value_name = "PATH", default_value = "/dev/gpiochip0")]
-    pub chip: PathBuf,
-
-    /// Length of the pulse that flips one dot, in microseconds.
-    #[arg(long, value_name = "MICROSECONDS", default_value_t = 190,
-          value_parser = clap::value_parser!(u32).range(1..=25_000))]
-    pub pulse_us: u32,
+    #[command(flatten)]
+    pub board: BoardArgs,
 
     /// COL-SEL line of each panel, in the order of the panels, e.g. `1,0`.
     /// Without it the first panel is on COL-SEL0, the second on COL-SEL1
@@ -179,18 +170,12 @@ impl Panel<GpioPins> {
     /// one that times the pulses.
     pub fn open(arrangement: Arrangement, args: &PanelArgs) -> Result<Self> {
         let geometry = Geometry::new(arrangement, args)?;
-        let pins = GpioPins::open(&args.chip)?;
-        let priority = if enable_realtime() {
-            "real-time priority"
-        } else {
-            "normal priority, pulses may run long (run as root for real-time priority)"
-        };
+        let (board, priority) = args.board.open()?;
         eprintln!(
             "adsb-flipdot: panels on {}, {priority}",
-            args.chip.display()
+            args.board.chip.display()
         );
-        let pulse = Duration::from_micros(args.pulse_us.into());
-        Self::new(Board::new(pins, pulse)?, geometry, args.invert)
+        Self::new(board, geometry, args.invert)
     }
 }
 

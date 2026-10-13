@@ -8,6 +8,7 @@ mod filter;
 mod flipdot;
 mod live;
 mod panel;
+mod parse;
 mod pi;
 mod record;
 mod run;
@@ -164,8 +165,8 @@ pub(crate) mod tests {
         else {
             panic!("expected debug pi");
         };
-        assert_eq!(args.chip, std::path::PathBuf::from("/dev/gpiochip0"));
-        assert_eq!((args.pulse_us, args.dry_run), (190, false));
+        assert_eq!(args.board.chip, std::path::PathBuf::from("/dev/gpiochip0"));
+        assert_eq!((args.board.pulse_us, args.dry_run), (190, false));
 
         let Command::Debug {
             command: DebugCommand::Pi(args),
@@ -173,7 +174,7 @@ pub(crate) mod tests {
         else {
             panic!("expected debug pi");
         };
-        assert_eq!((args.pulse_us, args.dry_run), (1000, true));
+        assert_eq!((args.board.pulse_us, args.dry_run), (1000, true));
 
         assert!(parse(&["--pulse-us", "0"]).is_err());
         assert!(parse(&["--pulse-us", "25001"]).is_err(), "above 25 ms");

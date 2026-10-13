@@ -12,6 +12,7 @@ use ratatui::Frame;
 use rs1090::decode::TimedMessage;
 
 use crate::aircraft_db::{AircraftInfo, DbArgs, Lookup};
+use crate::parse;
 use crate::source::SourceArgs;
 use crate::tracker::Tracker;
 use crate::tui::{self, Column, View, age_style, opt};
@@ -44,11 +45,11 @@ pub struct FilterParams {
     pub lon: f64,
 
     /// Width of the rectangle, across the view direction, in kilometres.
-    #[arg(long, value_name = "KM", default_value_t = 4.0, value_parser = parse_positive)]
+    #[arg(long, value_name = "KM", default_value_t = 4.0, value_parser = parse::positive)]
     pub area_width: f64,
 
     /// Length of the rectangle, along the view direction, in kilometres.
-    #[arg(long, value_name = "KM", default_value_t = 6.0, value_parser = parse_positive)]
+    #[arg(long, value_name = "KM", default_value_t = 6.0, value_parser = parse::positive)]
     pub area_length: f64,
 
     /// How much of the length lies ahead of the point, in percent. 50
@@ -97,51 +98,21 @@ impl FilterParams {
     }
 }
 
-fn parse_in_range(s: &str, limit: f64, what: &str) -> Result<f64, String> {
-    let value: f64 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
-    if value.is_finite() && value.abs() <= limit {
-        Ok(value)
-    } else {
-        Err(format!("{what} must be between -{limit} and {limit}"))
-    }
-}
-
 fn parse_latitude(s: &str) -> Result<f64, String> {
-    parse_in_range(s, 90.0, "latitude")
+    parse::number_in(s, -90.0..=90.0)
 }
 
 fn parse_longitude(s: &str) -> Result<f64, String> {
-    parse_in_range(s, 180.0, "longitude")
+    parse::number_in(s, -180.0..=180.0)
 }
 
 fn parse_direction(s: &str) -> Result<f64, String> {
-    let value: f64 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
-    if (0.0..=360.0).contains(&value) {
-        Ok(value)
-    } else {
-        Err("direction must be between 0 and 360".to_string())
-    }
+    parse::number_in(s, 0.0..=360.0)
 }
 
-fn parse_positive(s: &str) -> Result<f64, String> {
-    let value: f64 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
-    if value.is_finite() && value > 0.0 {
-        Ok(value)
-    } else {
-        Err("must be greater than 0".to_string())
-    }
-}
-
+/// A percentage, with or without the sign.
 fn parse_percent(s: &str) -> Result<f64, String> {
-    let number = s.strip_suffix('%').unwrap_or(s);
-    let value: f64 = number
-        .parse()
-        .map_err(|_| format!("`{s}` is not a number"))?;
-    if (0.0..=100.0).contains(&value) {
-        Ok(value)
-    } else {
-        Err("must be between 0 and 100".to_string())
-    }
+    parse::number_in(s.strip_suffix('%').unwrap_or(s), 0.0..=100.0)
 }
 
 /// The rectangle on the ground that aircraft have to be over.
