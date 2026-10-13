@@ -54,7 +54,7 @@ pub struct FilterParams {
     /// How much of the length lies ahead of the point, in percent. 50
     /// centres the rectangle on the point, 100 puts all of it ahead of you
     /// and 0 all of it behind you.
-    #[arg(long, value_name = "PERCENT", default_value_t = 50.0, value_parser = parse_percent)]
+    #[arg(long, value_name = "PERCENT", default_value_t = 80.0, value_parser = parse_percent)]
     pub area_offset: f64,
 
     /// Compass direction you look in from the point, in degrees. Two edges
@@ -996,7 +996,7 @@ mod tests {
                 args.max_altitude,
                 args.expire
             ),
-            (10.0, 10.0, 50.0, 153.0, 5000, 30)
+            (10.0, 10.0, 80.0, 153.0, 5000, 30)
         );
 
         let args = parse(&[

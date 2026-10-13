@@ -17,7 +17,7 @@ from pathlib import Path
 LAT, LON = 53.7271256, 9.9065838
 AREA_WIDTH_KM = 10.0
 AREA_LENGTH_KM = 10.0
-AREA_OFFSET_PERCENT = 50.0
+AREA_OFFSET_PERCENT = 80.0
 VIEW_DIRECTION = 153.0
 MAX_ALTITUDE_FT = 5000
 
@@ -80,8 +80,8 @@ def local(right, ahead, up=0.0):
     return add(add(mul(RIGHT, right), mul(AHEAD, ahead)), mul(UP, up))
 
 
-CAMERA = local(-4.0, -18.0, 12.5)
-CAM_AHEAD = unit(sub(local(0.6, 4.2), CAMERA))
+CAMERA = local(-4.0, -15.0, 12.5)
+CAM_AHEAD = unit(sub(local(0.6, 7.2), CAMERA))
 CAM_RIGHT = unit(cross(CAM_AHEAD, UP))
 CAM_UP = cross(CAM_RIGHT, CAM_AHEAD)
 FOCAL = 1550.0
@@ -254,7 +254,7 @@ for fill, face in sorted(house, key=lambda item: -depth(centroid(item[1]))):
     polygon(face, fill=fill, stroke="#5a4636", stroke_width=1, stroke_linejoin="round")
 polygon([local(-0.07, -d), local(0.07, -d), local(0.07, -d, 0.26), local(-0.07, -d, 0.26)], fill="#5a4636")
 
-aircraft_at = on_approach(11.8)
+aircraft_at = on_approach(4.6)
 inbound = mul(outbound, -1)
 wing = cross(inbound, UP)
 outline = [(0.5, 0), (0.42, 0.035), (0.1, 0.04), (-0.05, 0.45), (-0.15, 0.45), (-0.08, 0.04),
@@ -276,7 +276,7 @@ polygon(roof, fill=BOX_FILL, fill_opacity=0.14, stroke=BOX_EDGE, stroke_width=2.
 # --- labels -----------------------------------------------------------------
 
 hx, hy = project(local(-w, -d, 0.1))
-lx, ly = hx - 70, hy - 4
+lx, ly = hx - 70, hy - 40
 out.append(f'<path d="M{hx:.1f},{hy:.1f}L{lx + 10:.1f},{ly - 7:.1f}" stroke="#1f2a36" stroke-width="1.5" fill="none"/>')
 text(lx, ly, f"{LAT}° N, {LON}° E", size=22, anchor="end", weight="bold")
 text(lx, ly + 24, "--lat / --lon", size=16, anchor="end", fill="#4a5764")
@@ -294,7 +294,7 @@ text((x1 + x2) / 2 + 18, (y1 + y2) / 2 + 22, f"--area-length {AREA_LENGTH_KM:g} 
 (x1, y1), (x2, y2) = project(floor[0]), project(roof[0])
 text(x1 - 16, (y1 + y2) / 2 + 6, f"--max-altitude {MAX_ALTITUDE_FT} ft", size=20, anchor="end", weight="bold")
 
-north_from = local(-8.2, -1.0)
+north_from = local(-8.2, 2.0)
 north_to = add(north_from, (0.0, 1.8, 0.0))
 line(north_from, north_to, stroke="#1f2a36", stroke_width=2.5)
 polygon([add(north_to, (0.0, 0.5, 0.0)), add(north_to, (-0.2, 0.0, 0.0)), add(north_to, (0.2, 0.0, 0.0))], fill="#1f2a36")
