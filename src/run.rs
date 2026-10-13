@@ -13,7 +13,8 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use crate::display::{Note, Stacking};
 use crate::filter::{Filter, FilterParams, Flight, format_track};
-use crate::flipdot::{DisplayArgs, FrameBuffer, Scene};
+use crate::flipdot::DisplayArgs;
+use crate::scene::{FrameBuffer, Scene};
 use crate::source::{FrameStream, SourceArgs};
 use crate::template::{Template, default_templates};
 use crate::tui::View;
@@ -277,17 +278,12 @@ mod tests {
     use super::*;
     use crate::filter::Area;
     use crate::template::tests::{anonymous, easyjet};
+    use crate::tests::parse_args;
     use std::time::Duration;
 
     /// Two 28x14 panels, 5x7 font, 10 dots per second: 11 characters fit.
     fn display(extra: &[&str]) -> DisplayArgs {
-        use clap::Parser;
-        #[derive(Parser)]
-        struct Wrapper {
-            #[command(flatten)]
-            args: DisplayArgs,
-        }
-        Wrapper::parse_from(["test"].iter().chain(extra)).args
+        parse_args(extra)
     }
 
     fn templates(sources: &[&str]) -> Vec<Template> {

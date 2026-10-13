@@ -400,6 +400,7 @@ fn is_duplicate(last: &Option<(Vec<u8>, f64)>, msg: &TimedMessage) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::tests::{parse_args, try_parse_args};
     use rs1090::decode::Message;
 
     pub(crate) fn frame(hex_str: &str) -> Vec<u8> {
@@ -418,14 +419,8 @@ pub(crate) mod tests {
 
     /// A source that replays `path`.
     fn replay_args(path: &Path, extra: &[&str]) -> SourceArgs {
-        use clap::Parser;
-        #[derive(Parser)]
-        struct Wrapper {
-            #[command(flatten)]
-            args: SourceArgs,
-        }
         let path = path.to_str().unwrap();
-        Wrapper::parse_from(["test", "--device-record-file", path].iter().chain(extra)).args
+        parse_args(&[&["--device-record-file", path], extra].concat())
     }
 
     /// A file under the system temp dir, removed when dropped.
@@ -589,13 +584,7 @@ pub(crate) mod tests {
 
     #[test]
     fn record_file_excludes_device_and_iq_file() {
-        use clap::Parser;
-        #[derive(Parser)]
-        struct Wrapper {
-            #[command(flatten)]
-            args: SourceArgs,
-        }
-        let parse = |extra: &[&str]| Wrapper::try_parse_from(["test"].iter().chain(extra));
+        let parse = |extra: &[&str]| try_parse_args::<SourceArgs>(extra);
         assert!(parse(&["--device-record-file", "a.jsonl"]).is_ok());
         assert!(parse(&["--device-record-file", "a.jsonl", "--device", "1"]).is_err());
         assert!(parse(&["--device-record-file", "a.jsonl", "--file", "iq.bin"]).is_err());

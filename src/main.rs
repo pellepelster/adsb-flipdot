@@ -1,6 +1,7 @@
 //! adsb-flipdot: receive Mode S / ADS-B frames from an RTL2832U dongle.
 
 mod aircraft_db;
+mod board;
 mod display;
 mod dump;
 mod filter;
@@ -10,6 +11,7 @@ mod panel;
 mod pi;
 mod record;
 mod run;
+mod scene;
 mod source;
 mod template;
 mod tui;
@@ -88,8 +90,21 @@ async fn run(command: Command) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Parse `extra` as the options of one `clap::Args` struct on its own,
+    /// the way `Cli` would see them.
+    pub(crate) fn try_parse_args<A: clap::Args>(extra: &[&str]) -> Result<A, clap::Error> {
+        let matches = A::augment_args(clap::Command::new("test"))
+            .try_get_matches_from(["test"].iter().chain(extra))?;
+        A::from_arg_matches(&matches)
+    }
+
+    /// Like [`try_parse_args`], for options that are known to be valid.
+    pub(crate) fn parse_args<A: clap::Args>(extra: &[&str]) -> A {
+        try_parse_args(extra).unwrap_or_else(|e| panic!("{extra:?}: {e}"))
+    }
 
     #[test]
     fn cli_definition_is_valid() {
@@ -130,7 +145,7 @@ mod tests {
             panic!("expected debug flipdot");
         };
         assert_eq!(args.text, ["SAS51B", "FL390"]);
-        assert_eq!(args.display.font, flipdot::Font::F4x6);
+        assert_eq!(args.display.font, scene::Font::F4x6);
         let display = &args.display;
         assert_eq!((display.width, display.height, display.panels), (28, 14, 2));
         assert_eq!(display.display_size(), (56, 14));
@@ -223,7 +238,7 @@ mod tests {
             panic!("expected run");
         };
         assert_eq!(args.templates.len(), 2);
-        assert_eq!(args.display.scroll, flipdot::Scroll::Always);
+        assert_eq!(args.display.scroll, scene::Scroll::Always);
 
         let error = Cli::try_parse_from(["adsb-flipdot", "run", "--template", "{{ wingspan }}"])
             .unwrap_err()

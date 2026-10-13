@@ -10,7 +10,7 @@ use std::io::{IsTerminal, Write};
 
 use anyhow::Result;
 
-use crate::flipdot::FrameBuffer;
+use crate::scene::FrameBuffer;
 
 /// One dot turned to its other side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +113,50 @@ pub enum Stacking {
     Blocks,
 }
 
+/// The dots as text: two terminal columns per dot, so dots come out round
+/// and roughly square like on the real panel. The dots in `flipped` stand
+/// out from the ones that stayed as they were.
+fn dots_text(dots: &FrameBuffer, color: bool, flipped: &[Flip]) -> String {
+    let (width, height) = (dots.width(), dots.height());
+    let mut marked = vec![false; (width * height) as usize];
+    for flip in flipped {
+        if flip.x < width && flip.y < height {
+            marked[(flip.y * width + flip.x) as usize] = true;
+        }
+    }
+    // Yellow for a flipped dot, dim grey for the black side. A dot that
+    // just came on is white, one that just went off a red ring.
+    let (on, off, came_on, went_off, reset) = if color {
+        (
+            "\x1b[93m●",
+            "\x1b[90m·",
+            "\x1b[97m●",
+            "\x1b[91m○",
+            "\x1b[0m",
+        )
+    } else {
+        ("●", "·", "◉", "○", "")
+    };
+    let mut out = String::new();
+    for y in 0..height {
+        for x in 0..width {
+            if x > 0 {
+                out.push(' ');
+            }
+            let marked = marked[(y * width + x) as usize];
+            out.push_str(match (dots.get(x, y), marked) {
+                (true, false) => on,
+                (false, false) => off,
+                (true, true) => came_on,
+                (false, true) => went_off,
+            });
+        }
+        out.push_str(reset);
+        out.push('\n');
+    }
+    out
+}
+
 /// What the terminal drew last.
 struct Drawn {
     /// Lines to go back up to draw over it.
@@ -179,7 +223,7 @@ impl<W: Write> Terminal<W> {
                 }
                 None => {}
             }
-            text.push_str(&self.dots.to_terminal_marked(true, &self.flipped));
+            text.push_str(&dots_text(&self.dots, true, &self.flipped));
             text.push_str(&format!("{:>4} flipped", self.flipped.len()));
             if let Some(caption) = note.caption {
                 text.push_str("  ");
@@ -195,7 +239,7 @@ impl<W: Write> Terminal<W> {
             if self.drawn.is_some() {
                 text.push('\n');
             }
-            text.push_str(&self.dots.to_terminal(false));
+            text.push_str(&dots_text(&self.dots, false, &[]));
             if let Some(caption) = note.caption {
                 text.push_str(caption);
                 text.push('\n');
@@ -235,7 +279,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::flipdot::{Align, Font, Scene};
+    use crate::scene::{Align, Font, Scene};
 
     /// An output that records the flips it is given.
     #[derive(Clone, Default)]
@@ -410,6 +454,19 @@ mod tests {
             .unwrap();
         assert!(most > 0);
         assert!(most < 784 / 3, "{most} flips for one step");
+    }
+
+    #[test]
+    fn dots_text_has_one_row_per_dot_row() {
+        let fb = Scene::new(&["A"], Font::F5x7, Align::Left, 28, 14).frame(0);
+        let text = dots_text(&fb, false, &[]);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 14);
+        // 28 dots separated by single spaces.
+        assert!(lines.iter().all(|l| l.chars().count() == 55), "{text}");
+        assert!(text.contains('●') && text.contains('·'));
+        assert!(!text.contains('\x1b'), "no colour codes when disabled");
+        assert!(dots_text(&fb, true, &[]).contains("\x1b[93m●"));
     }
 
     /// A terminal output that writes into a string.

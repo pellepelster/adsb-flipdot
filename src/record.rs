@@ -129,6 +129,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
 mod tests {
     use super::*;
     use crate::source::tests::{TempFile, timed};
+    use crate::tests::parse_args;
     use std::io::Read;
 
     fn read(path: &Path) -> String {
@@ -192,22 +193,14 @@ mod tests {
         let input = TempFile::new("roundtrip-in", &original);
         let output = TempFile::new("roundtrip-out", "");
 
-        use clap::Parser;
-        #[derive(Parser)]
-        struct Wrapper {
-            #[command(flatten)]
-            args: RecordArgs,
-        }
-        let args = Wrapper::parse_from([
-            "test",
+        let args: RecordArgs = parse_args(&[
             output.0.to_str().unwrap(),
             "--overwrite",
             "--device-record-file",
             input.0.to_str().unwrap(),
             "--device-record-speed",
             "50",
-        ])
-        .args;
+        ]);
         run(args).await.unwrap();
 
         let recorded = read(&output.0);

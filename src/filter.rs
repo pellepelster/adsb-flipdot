@@ -481,6 +481,7 @@ mod tests {
     use super::*;
     use crate::live::tests::{IDENT, POS_EVEN, POS_ODD};
     use crate::source::tests::timed;
+    use crate::tests::try_parse_args;
     use crate::tui::tests::screen;
 
     /// The default point of interest.
@@ -977,15 +978,9 @@ mod tests {
 
     #[test]
     fn arguments_have_the_expected_defaults_and_limits() {
-        use clap::Parser;
-        #[derive(Parser)]
-        struct Wrapper {
-            #[command(flatten)]
-            args: FilterParams,
-        }
-        let parse = |extra: &[&str]| Wrapper::try_parse_from(["test"].iter().chain(extra));
+        let parse = |extra: &[&str]| try_parse_args::<FilterParams>(extra);
 
-        let args = parse(&[]).unwrap().args;
+        let args = parse(&[]).unwrap();
         assert_eq!((args.lat, args.lon), CENTER);
         assert_eq!(
             (
@@ -1011,8 +1006,7 @@ mod tests {
             "--area-offset",
             "80%",
         ])
-        .unwrap()
-        .args;
+        .unwrap();
         assert_eq!((args.lat, args.lon), (-33.9, -151.2));
         assert_eq!(
             (args.area_width, args.area_length, args.area_offset),
@@ -1027,17 +1021,11 @@ mod tests {
             parse(&["--size", "5"]).is_err(),
             "split into width and length"
         );
-        assert_eq!(
-            parse(&["--area-offset", "0"]).unwrap().args.area_offset,
-            0.0
-        );
+        assert_eq!(parse(&["--area-offset", "0"]).unwrap().area_offset, 0.0);
         assert!(parse(&["--area-offset", "101"]).is_err());
         assert!(parse(&["--area-offset", "-1"]).is_err());
         assert_eq!(
-            parse(&["--view-direction", "0"])
-                .unwrap()
-                .args
-                .view_direction,
+            parse(&["--view-direction", "0"]).unwrap().view_direction,
             0.0
         );
         assert!(parse(&["--view-direction", "361"]).is_err());

@@ -2,7 +2,7 @@
 //! adapter board.
 //!
 //! [`Geometry`] finds the panel, row and column of a dot of the display.
-//! The pins and their rules are those of [`Board`], shared with `debug pi`.
+//! The pins and their rules are those of [`Board`].
 //! The pulses are timed on the thread that shows the frame, which is busy
 //! for about a quarter of a millisecond per dot.
 
@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
+use crate::board::{Board, GpioPins, MAX_COLUMNS, MAX_PANELS, MAX_ROWS, Pins, enable_realtime};
 use crate::display::{Flip, Note, Output};
 use crate::flipdot::{DisplayArgs, Layout};
-use crate::pi::{Board, GpioPins, MAX_COLUMNS, MAX_PANELS, MAX_ROWS, Pins, enable_realtime};
 
 #[derive(clap::Args, Debug)]
 pub struct PanelArgs {
@@ -237,19 +237,14 @@ impl<P: Pins> Drop for Panel<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::line_number;
+    use crate::board::tests::{FakePins, Log, PULSE, named};
     use crate::display::Display;
-    use crate::flipdot::FrameBuffer;
-    use crate::pi::line_number;
-    use crate::pi::tests::{FakePins, Log, PULSE, named};
+    use crate::scene::FrameBuffer;
+    use crate::tests::parse_args;
 
     fn args(extra: &[&str]) -> DisplayArgs {
-        use clap::Parser;
-        #[derive(Parser)]
-        struct Wrapper {
-            #[command(flatten)]
-            args: DisplayArgs,
-        }
-        Wrapper::parse_from(["test"].iter().chain(extra)).args
+        parse_args(extra)
     }
 
     fn geometry(extra: &[&str]) -> Geometry {
