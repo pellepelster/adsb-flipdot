@@ -1,7 +1,7 @@
 //! `run`: show aircraft passing the point of interest on the flipdot display.
 //!
 //! Frames go through the same [`Filter`] as `debug filter`. Each aircraft
-//! inside the circle is turned into text by one or more [`Template`]s, and
+//! inside the square is turned into text by one or more [`Template`]s, and
 //! the text is laid out by the same [`Scene`] as `debug flipdot`. For now
 //! the display is simulated in the terminal.
 
@@ -56,8 +56,9 @@ struct Page {
 /// Decides what is on the display at every tick: which aircraft, which
 /// template, and how far a scrolling line has moved. Pure state, no I/O.
 ///
-/// Pages go round all templates of an aircraft, then on to the next
-/// aircraft. A static page shows live values. A scrolling page keeps its
+/// Only one aircraft is shown at a time: pages go round its templates
+/// until it has left the square, and only then the one that has been
+/// inside the longest comes up. A static page shows live values. A scrolling page keeps its
 /// values for one pass, because text that changes under way would jump.
 struct Presenter {
     templates: Vec<Template>,
@@ -92,10 +93,9 @@ impl Presenter {
         }
     }
 
-    /// Bring up the first page worth showing, trying aircraft `aircraft`
-    /// with template `template` first and then every later combination.
-    /// If no page has anything to say, the starting aircraft's first
-    /// template is shown regardless.
+    /// Bring up the first page of aircraft `aircraft` worth showing, trying
+    /// template `template` first and then every other one. If no page has
+    /// anything to say, the first template is shown regardless.
     fn open(
         &mut self,
         flights: &[Flight],
@@ -104,19 +104,16 @@ impl Presenter {
         template: usize,
     ) {
         let (count, templates) = (flights.len(), self.templates.len());
-        let start = aircraft % count * templates + template.min(templates - 1);
-        let pick = (0..count * templates)
-            .map(|step| (start + step) % (count * templates))
-            .map(|slot| (slot / templates, slot % templates))
-            .find(|&(a, t)| self.templates[t].render(&flights[a], a, count).complete)
-            .unwrap_or((aircraft % count, 0));
+        let flight = &flights[aircraft];
+        let pick = (0..templates)
+            .map(|step| (template + step) % templates)
+            .find(|&t| self.templates[t].render(flight, aircraft, count).complete)
+            .unwrap_or(0);
 
-        let lines = self.templates[pick.1]
-            .render(&flights[pick.0], pick.0, count)
-            .lines;
+        let lines = self.templates[pick].render(flight, aircraft, count).lines;
         self.page = Some(Page {
-            icao: flights[pick.0].icao,
-            template: pick.1,
+            icao: flight.icao,
+            template: pick,
             scene: display.scene(&lines),
             lines,
             elapsed: 0,
@@ -135,9 +132,8 @@ impl Presenter {
             return true;
         };
         let Some(index) = flights.iter().position(|f| f.icao == page.icao) else {
-            // The aircraft left: carry on with the one that follows it.
-            let next = flights.iter().position(|f| f.icao > page.icao).unwrap_or(0);
-            self.open(flights, display, next, 0);
+            // The aircraft left: on to the one that has waited longest.
+            self.open(flights, display, 0, 0);
             return true;
         };
 
@@ -149,13 +145,10 @@ impl Presenter {
             return false;
         }
         if page.elapsed >= self.page_ticks {
-            let template = page.template + 1;
-            if template < self.templates.len() {
-                self.open(flights, display, index, template);
-            } else {
-                self.open(flights, display, index + 1, 0);
-            }
-            return true;
+            let (template, lines) = (page.template + 1, page.lines.clone());
+            self.open(flights, display, index, template);
+            // With a single page worth showing the text may be the same.
+            return self.page.as_ref().is_some_and(|page| page.lines != lines);
         }
 
         // Same page, fresh values.
@@ -197,8 +190,8 @@ fn status_line(filter: &Filter, flights: &[Flight], shown: Option<usize>) -> Str
             format!("{}  [{}/{}]", parts.join("  "), index + 1, flights.len())
         }
         None => format!(
-            "no aircraft within {} km at or below {} ft  ({} passes, {} frames, {})",
-            filter.radius_km(),
+            "no aircraft in the {} km square at or below {} ft  ({} passes, {} frames, {})",
+            filter.size_km(),
             filter.max_altitude_ft(),
             filter.total_passes(),
             filter.frames(),
@@ -419,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn pages_go_through_all_templates_then_the_next_aircraft() {
+    fn pages_stay_with_one_aircraft_while_another_waits() {
         let display = display(&[]);
         let flights = [flight(1, "AAA"), flight(2, "BBB")];
         let mut presenter = Presenter::new(
@@ -432,8 +425,25 @@ mod tests {
         for _ in 0..5 {
             seen.push(lines(&presenter)[0].clone());
             assert_eq!(until_change(&mut presenter, &flights, &display), 20);
+            assert_eq!(presenter.shown(&flights), Some(0));
         }
-        assert_eq!(seen, ["AAA", "AAA 1/2", "BBB", "BBB 2/2", "AAA"]);
+        assert_eq!(seen, ["AAA", "AAA 1/2", "AAA", "AAA 1/2", "AAA"]);
+
+        // Only when AAA has left the square is it the turn of BBB.
+        assert!(presenter.step(&flights[1..], &display));
+        assert_eq!(lines(&presenter), ["BBB"]);
+    }
+
+    #[test]
+    fn single_page_stays_up_without_a_change() {
+        let display = display(&[]);
+        let flights = [flight(1, "AAA"), flight(2, "BBB")];
+        let mut presenter = Presenter::new(templates(&["{{ name }}"]), 20);
+        assert!(presenter.step(&flights, &display));
+        for _ in 0..100 {
+            assert!(!presenter.step(&flights, &display));
+            assert_eq!(lines(&presenter), ["AAA"]);
+        }
     }
 
     #[test]
@@ -512,12 +522,12 @@ mod tests {
     }
 
     #[test]
-    fn scrolling_page_finishes_its_pass_before_the_next_aircraft() {
+    fn scrolling_page_finishes_its_pass_before_the_next_page() {
         let display = display(&[]);
         let flights = [flight(1, "AAA"), flight(2, "BBB")];
         let source = "{{ callsign }} {{ aircraft code }} {{ track }} {{ altitude }}";
-        // 2 s per page is far shorter than one pass of 13.5 s.
-        let mut presenter = Presenter::new(templates(&[source]), 20);
+        // 2 s per page is far shorter than one pass of 12 s.
+        let mut presenter = Presenter::new(templates(&[source, "{{ name }}"]), 20);
         presenter.step(&flights, &display);
         assert_eq!(lines(&presenter), ["AAA A320 153° 1200ft"]);
         // 20 characters: 100 dots + 10 gap + 10 rest.
@@ -526,7 +536,7 @@ mod tests {
             120,
             "one whole pass"
         );
-        assert_eq!(lines(&presenter), ["BBB A320 153° 1200ft"]);
+        assert_eq!(lines(&presenter), ["AAA"]);
     }
 
     #[test]
@@ -535,10 +545,10 @@ mod tests {
         let flights = [flight(1, "AAA"), flight(2, "BBB")];
         let source = "{{ callsign }} {{ aircraft code }} {{ track }} {{ altitude }}";
         // 20 s per page, one pass is 12 s: two passes, 24 s.
-        let mut presenter = Presenter::new(templates(&[source]), 200);
+        let mut presenter = Presenter::new(templates(&[source, "{{ name }}"]), 200);
         presenter.step(&flights, &display);
         assert_eq!(until_change(&mut presenter, &flights, &display), 240);
-        assert_eq!(lines(&presenter), ["BBB A320 153° 1200ft"]);
+        assert_eq!(lines(&presenter), ["AAA"]);
     }
 
     #[test]
@@ -567,18 +577,21 @@ mod tests {
         let all = [flight(1, "AAA"), flight(2, "BBB"), flight(3, "CCC")];
         let mut presenter = Presenter::new(templates(&["{{ name }}"]), 1000);
         presenter.step(&all, &display);
-        until_change(&mut presenter, &all, &display);
-        assert_eq!(lines(&presenter), ["BBB"]);
-
-        // BBB leaves the circle: CCC follows it in address order.
-        let remaining = [all[0].clone(), all[2].clone()];
-        assert!(presenter.step(&remaining, &display));
-        assert_eq!(lines(&presenter), ["CCC"]);
-        assert_eq!(presenter.shown(&remaining), Some(1));
-
-        // CCC leaves too: wrap around to AAA.
-        assert!(presenter.step(&remaining[..1], &display));
         assert_eq!(lines(&presenter), ["AAA"]);
+
+        // CCC, which is waiting, leaves the square: nothing changes.
+        assert!(!presenter.step(&all[..2], &display));
+        assert_eq!(lines(&presenter), ["AAA"]);
+
+        // AAA leaves: BBB has waited longest. DDD entered in the meantime.
+        let remaining = [all[1].clone(), flight(4, "DDD")];
+        assert!(presenter.step(&remaining, &display));
+        assert_eq!(lines(&presenter), ["BBB"]);
+        assert_eq!(presenter.shown(&remaining), Some(0));
+
+        // BBB leaves too: on to DDD.
+        assert!(presenter.step(&remaining[1..], &display));
+        assert_eq!(lines(&presenter), ["DDD"]);
 
         // The last one leaves: dark.
         assert!(presenter.step(&[], &display));
@@ -604,7 +617,7 @@ mod tests {
 
     #[test]
     fn status_line_describes_the_shown_aircraft() {
-        let filter = Filter::new((53.7, 9.9), 5.0, 5000, Duration::from_secs(30));
+        let filter = Filter::new((53.7, 9.9), 10.0, 153.0, 5000, Duration::from_secs(30));
         let flights = [easyjet(), anonymous(0xabc123)];
         assert_eq!(
             status_line(&filter, &flights, Some(0)),
@@ -616,7 +629,7 @@ mod tests {
         );
         assert_eq!(
             status_line(&filter, &[], None),
-            "no aircraft within 5 km at or below 5000 ft  (0 passes, 0 frames, aircraft db off)"
+            "no aircraft in the 10 km square at or below 5000 ft  (0 passes, 0 frames, aircraft db off)"
         );
     }
 }
