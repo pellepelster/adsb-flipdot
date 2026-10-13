@@ -1,8 +1,5 @@
 //! Text laid out as dots.
 //!
-//! [`FrameBuffer`] is a grid of dots and an `embedded-graphics` draw target.
-//! Everything that draws text goes through it.
-//!
 //! A [`Scene`] is laid out text. Lines that fit are static; lines wider than
 //! the display scroll as a looping ticker, one dot per tick.
 
@@ -14,6 +11,8 @@ use embedded_graphics::mono_font::{MonoFont, MonoTextStyle};
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Alignment, Baseline, Text, TextStyleBuilder};
+
+use crate::domain::dots::FrameBuffer;
 
 /// Blank space between the end and the restart of a scrolling line, in
 /// character cells.
@@ -71,69 +70,6 @@ pub enum Align {
     Left,
     Center,
     Right,
-}
-
-/// A grid of dots, each either flipped on or off.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrameBuffer {
-    width: u32,
-    height: u32,
-    dots: Vec<bool>,
-}
-
-impl FrameBuffer {
-    pub fn new(width: u32, height: u32) -> Self {
-        Self {
-            width,
-            height,
-            dots: vec![false; (width * height) as usize],
-        }
-    }
-
-    /// Number of dot columns.
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// Number of dot rows.
-    pub fn height(&self) -> u32 {
-        self.height
-    }
-
-    pub fn get(&self, x: u32, y: u32) -> bool {
-        x < self.width && y < self.height && self.dots[(y * self.width + x) as usize]
-    }
-
-    /// Set one dot. Positions outside the display are ignored.
-    pub fn set(&mut self, x: u32, y: u32, on: bool) {
-        if x < self.width && y < self.height {
-            self.dots[(y * self.width + x) as usize] = on;
-        }
-    }
-}
-
-impl OriginDimensions for FrameBuffer {
-    fn size(&self) -> Size {
-        Size::new(self.width, self.height)
-    }
-}
-
-impl DrawTarget for FrameBuffer {
-    type Color = BinaryColor;
-    type Error = core::convert::Infallible;
-
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        for Pixel(point, color) in pixels {
-            // Anything outside the display is clipped.
-            if let (Ok(x), Ok(y)) = (u32::try_from(point.x), u32::try_from(point.y)) {
-                self.set(x, y, color.is_on());
-            }
-        }
-        Ok(())
-    }
 }
 
 /// One line that is wider than the display, pre-rendered at full width
@@ -262,7 +198,7 @@ impl Scene {
     pub fn cycle_ticks(&self) -> Option<u64> {
         self.tickers
             .iter()
-            .map(|t| u64::from(self.hold) + u64::from(t.strip.width))
+            .map(|t| u64::from(self.hold) + u64::from(t.strip.width()))
             .max()
     }
 
@@ -272,12 +208,12 @@ impl Scene {
         for ticker in &self.tickers {
             let strip = &ticker.strip;
             // One pass: rest at the start, then scroll the whole strip by.
-            // After `strip.width` dots the text is back at its start.
-            let cycle = u64::from(self.hold) + u64::from(strip.width);
+            // After `strip.width()` dots the text is back at its start.
+            let cycle = u64::from(self.hold) + u64::from(strip.width());
             let offset = (tick % cycle).saturating_sub(u64::from(self.hold)) as u32;
-            for y in 0..strip.height {
-                for x in 0..fb.width {
-                    fb.set(x, ticker.y + y, strip.get((x + offset) % strip.width, y));
+            for y in 0..strip.height() {
+                for x in 0..fb.width() {
+                    fb.set(x, ticker.y + y, strip.get((x + offset) % strip.width(), y));
                 }
             }
         }
@@ -316,9 +252,9 @@ mod tests {
 
     /// Dots as rows of `#` and `.`, for readable assertions.
     fn rows(fb: &FrameBuffer) -> Vec<String> {
-        (0..fb.height)
+        (0..fb.height())
             .map(|y| {
-                (0..fb.width)
+                (0..fb.width())
                     .map(|x| if fb.get(x, y) { '#' } else { '.' })
                     .collect()
             })
@@ -326,23 +262,26 @@ mod tests {
     }
 
     fn lit(fb: &FrameBuffer) -> usize {
-        fb.dots.iter().filter(|d| **d).count()
+        (0..fb.height())
+            .flat_map(|y| (0..fb.width()).map(move |x| (x, y)))
+            .filter(|(x, y)| fb.get(*x, *y))
+            .count()
     }
 
     /// Leftmost and rightmost lit column.
     fn extent(fb: &FrameBuffer) -> (u32, u32) {
-        let cols: Vec<u32> = (0..fb.width)
-            .filter(|x| (0..fb.height).any(|y| fb.get(*x, y)))
+        let cols: Vec<u32> = (0..fb.width())
+            .filter(|x| (0..fb.height()).any(|y| fb.get(*x, y)))
             .collect();
         (cols[0], *cols.last().unwrap())
     }
 
-    /// `fb` shifted left by `by` dots, wrapping around at `fb.width`.
+    /// `fb` shifted left by `by` dots, wrapping around at `fb.width()`.
     fn rotated(fb: &FrameBuffer, by: u32) -> FrameBuffer {
-        let mut out = FrameBuffer::new(fb.width, fb.height);
-        for y in 0..fb.height {
-            for x in 0..fb.width {
-                out.set(x, y, fb.get((x + by) % fb.width, y));
+        let mut out = FrameBuffer::new(fb.width(), fb.height());
+        for y in 0..fb.height() {
+            for x in 0..fb.width() {
+                out.set(x, y, fb.get((x + by) % fb.width(), y));
             }
         }
         out
@@ -420,7 +359,7 @@ mod tests {
         let scene = scene1(&["SAS51B"], Font::F5x7, Align::Left);
         assert!(scene.scrolls());
         let strip = &scene.tickers[0].strip;
-        assert_eq!((strip.width, strip.height), (40, 7));
+        assert_eq!((strip.width(), strip.height()), (40, 7));
 
         for tick in [0u64, 1, 2, 13, 39] {
             let frame = scene.frame(tick);
@@ -479,7 +418,7 @@ mod tests {
         assert!(fits.scrolls());
         // The strip is the text plus one display width: the text leaves
         // completely before it comes back in.
-        assert_eq!(fits.tickers[0].strip.width, 10 + 28);
+        assert_eq!(fits.tickers[0].strip.width(), 10 + 28);
         assert_eq!(
             fits.frame(0),
             render(&["AB"], Font::F5x7, Align::Left),

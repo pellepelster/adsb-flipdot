@@ -17,8 +17,9 @@ use anyhow::{Result, bail};
 use crate::commands::shutdown::Shutdown;
 use crate::domain::scene::{Align, Font, Scene, Scroll};
 use crate::output::board::MAX_COLUMNS;
-use crate::output::display::{Display, Note, Stacking, Terminal};
 use crate::output::panel::{Arrangement, Layout, Panel, PanelArgs};
+use crate::output::terminal::{Stacking, Terminal};
+use crate::output::{Display, Note};
 
 /// Size of one real panel in dots: as wide as the board can address, two
 /// rows short of it.

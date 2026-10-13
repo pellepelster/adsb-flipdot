@@ -13,10 +13,12 @@ use anyhow::Result;
 use crate::commands::flipdot::DisplayArgs;
 use crate::commands::shutdown::Shutdown;
 use crate::commands::tui::View;
+use crate::domain::dots::FrameBuffer;
 use crate::domain::filter::{Filter, FilterParams, Flight, format_track};
-use crate::domain::scene::{FrameBuffer, Scene};
+use crate::domain::scene::Scene;
 use crate::domain::template::{Template, default_templates};
-use crate::output::display::{Note, Stacking};
+use crate::output::Note;
+use crate::output::terminal::Stacking;
 use crate::source::stream::{FrameStream, SourceArgs};
 
 #[derive(clap::Args, Debug)]
