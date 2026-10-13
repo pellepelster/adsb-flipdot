@@ -13,11 +13,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use clap::ValueEnum;
 
 use crate::board::MAX_COLUMNS;
 use crate::display::{Display, Note, Stacking, Terminal};
-use crate::panel::{Panel, PanelArgs};
+use crate::panel::{Arrangement, Layout, Panel, PanelArgs};
 use crate::scene::{Align, Font, Scene, Scroll};
 use crate::shutdown::Shutdown;
 
@@ -82,12 +81,19 @@ pub struct DisplayArgs {
 }
 
 impl DisplayArgs {
+    /// The panels the display is built from.
+    fn arrangement(&self) -> Arrangement {
+        Arrangement {
+            panels: self.panels,
+            width: self.width,
+            height: self.height,
+            layout: self.layout,
+        }
+    }
+
     /// Size of the whole display in dots.
     pub fn display_size(&self) -> (u32, u32) {
-        match self.layout {
-            Layout::Row => (self.width * self.panels, self.height),
-            Layout::Column => (self.width, self.height * self.panels),
-        }
+        self.arrangement().display_size()
     }
 
     /// Time between two frames of a scrolling line.
@@ -113,7 +119,7 @@ impl DisplayArgs {
         let mut display = Display::new(width, height);
         // The panels first: the terminal then shows only what they did.
         if self.panel.gpio {
-            display.attach(Panel::open(self)?);
+            display.attach(Panel::open(self.arrangement(), &self.panel)?);
         }
         display.attach(Terminal::stdout(width, height, stacking));
         Ok(display)
@@ -126,14 +132,6 @@ impl DisplayArgs {
         // Rest for one second before each pass so the start is readable.
         Scene::build(&refs, self.font, self.align, width, height, self.scroll).with_hold(self.speed)
     }
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Layout {
-    /// Panels side by side: a wide display.
-    Row,
-    /// Panels stacked on top of each other: a tall display.
-    Column,
 }
 
 /// Split arguments into display lines. `\n`, typed literally or as a real

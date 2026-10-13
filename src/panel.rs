@@ -1,19 +1,20 @@
 //! The flipdot panels as an [`Output`]: every flip becomes one pulse on the
 //! adapter board.
 //!
-//! [`Geometry`] finds the panel, row and column of a dot of the display.
-//! The pins and their rules are those of [`Board`].
-//! The pulses are timed on the thread that shows the frame, which is busy
-//! for about a quarter of a millisecond per dot.
+//! An [`Arrangement`] says which panels make up the display. [`Geometry`]
+//! finds the panel, row and column of a dot of the display. The pins and
+//! their rules are those of [`Board`]. The pulses are timed on the thread
+//! that shows the frame, which is busy for about a quarter of a millisecond
+//! per dot.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use clap::ValueEnum;
 
 use crate::board::{Board, GpioPins, MAX_COLUMNS, MAX_PANELS, MAX_ROWS, Pins, enable_realtime};
 use crate::display::{Flip, Note, Output};
-use crate::flipdot::{DisplayArgs, Layout};
 
 #[derive(clap::Args, Debug)]
 pub struct PanelArgs {
@@ -52,6 +53,35 @@ pub struct PanelArgs {
     pub invert: bool,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// Panels side by side: a wide display.
+    Row,
+    /// Panels stacked on top of each other: a tall display.
+    Column,
+}
+
+/// The panels a display is built from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Arrangement {
+    /// Number of panels.
+    pub panels: u32,
+    /// Size of one panel in dots.
+    pub width: u32,
+    pub height: u32,
+    pub layout: Layout,
+}
+
+impl Arrangement {
+    /// Size of the whole display in dots.
+    pub fn display_size(&self) -> (u32, u32) {
+        match self.layout {
+            Layout::Row => (self.width * self.panels, self.height),
+            Layout::Column => (self.width, self.height * self.panels),
+        }
+    }
+}
+
 /// The address of a row or column, counted from 0. Each decoder chip
 /// serves seven lines and leaves every eighth code unused.
 fn address(line: u32) -> u8 {
@@ -72,10 +102,7 @@ struct Place {
 /// How the panels make up the display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Geometry {
-    /// Size of one panel in dots.
-    width: u32,
-    height: u32,
-    layout: Layout,
+    arrangement: Arrangement,
     /// COL-SEL line of each panel.
     select: Vec<usize>,
     mirror_x: bool,
@@ -84,27 +111,22 @@ struct Geometry {
 
 impl Geometry {
     /// Fail if the board or the panels cannot address this display.
-    fn new(args: &DisplayArgs) -> Result<Self> {
-        let panels = args.panels as usize;
-        if args.width > MAX_COLUMNS || args.height > MAX_ROWS {
+    fn new(arrangement: Arrangement, args: &PanelArgs) -> Result<Self> {
+        let Arrangement { width, height, .. } = arrangement;
+        let panels = arrangement.panels as usize;
+        if width > MAX_COLUMNS || height > MAX_ROWS {
             bail!(
                 "a panel is addressed with at most {MAX_COLUMNS} columns and {MAX_ROWS} rows, \
-                 not {}x{}",
-                args.width,
-                args.height
+                 not {width}x{height}"
             );
         }
         if panels > MAX_PANELS {
             bail!("the adapter board selects at most {MAX_PANELS} panels, not {panels}");
         }
-        let select: Vec<usize> = if args.panel.select.is_empty() {
+        let select: Vec<usize> = if args.select.is_empty() {
             (0..panels).collect()
         } else {
-            args.panel
-                .select
-                .iter()
-                .map(|line| *line as usize)
-                .collect()
+            args.select.iter().map(|line| *line as usize).collect()
         };
         if select.len() != panels {
             bail!(
@@ -113,39 +135,29 @@ impl Geometry {
             );
         }
         Ok(Self {
-            width: args.width,
-            height: args.height,
-            layout: args.layout,
+            arrangement,
             select,
-            mirror_x: args.panel.mirror_x,
-            mirror_y: args.panel.mirror_y,
+            mirror_x: args.mirror_x,
+            mirror_y: args.mirror_y,
         })
-    }
-
-    /// Size of the whole display in dots.
-    fn display_size(&self) -> (u32, u32) {
-        let panels = self.select.len() as u32;
-        match self.layout {
-            Layout::Row => (self.width * panels, self.height),
-            Layout::Column => (self.width, self.height * panels),
-        }
     }
 
     /// The panel, row and column of dot `x`, `y` of the display. `None`
     /// outside the display.
     fn place(&self, x: u32, y: u32) -> Option<Place> {
-        let (width, height) = self.display_size();
+        let panel = self.arrangement;
+        let (width, height) = panel.display_size();
         if x >= width || y >= height {
             return None;
         }
         let x = if self.mirror_x { width - 1 - x } else { x };
         let y = if self.mirror_y { height - 1 - y } else { y };
-        let (panel, column, row) = match self.layout {
-            Layout::Row => (x / self.width, x % self.width, y),
-            Layout::Column => (y / self.height, x, y % self.height),
+        let (index, column, row) = match panel.layout {
+            Layout::Row => (x / panel.width, x % panel.width, y),
+            Layout::Column => (y / panel.height, x, y % panel.height),
         };
         Some(Place {
-            select: self.select[panel as usize],
+            select: self.select[index as usize],
             row: address(row),
             column: address(column),
         })
@@ -165,9 +177,9 @@ impl Panel<GpioPins> {
     /// Take the pins of the adapter board. The calling thread gets
     /// real-time priority where the system allows it, because it is the
     /// one that times the pulses.
-    pub fn open(args: &DisplayArgs) -> Result<Self> {
-        let geometry = Geometry::new(args)?;
-        let pins = GpioPins::open(&args.panel.chip)?;
+    pub fn open(arrangement: Arrangement, args: &PanelArgs) -> Result<Self> {
+        let geometry = Geometry::new(arrangement, args)?;
+        let pins = GpioPins::open(&args.chip)?;
         let priority = if enable_realtime() {
             "real-time priority"
         } else {
@@ -175,10 +187,10 @@ impl Panel<GpioPins> {
         };
         eprintln!(
             "adsb-flipdot: panels on {}, {priority}",
-            args.panel.chip.display()
+            args.chip.display()
         );
-        let pulse = Duration::from_micros(args.panel.pulse_us.into());
-        Self::new(Board::new(pins, pulse)?, geometry, args.panel.invert)
+        let pulse = Duration::from_micros(args.pulse_us.into());
+        Self::new(Board::new(pins, pulse)?, geometry, args.invert)
     }
 }
 
@@ -197,7 +209,7 @@ impl<P: Pins> Panel<P> {
     /// than its panels never draws there, and the dots would keep whatever
     /// they showed when the power went.
     fn clear_unused_rows(&mut self) -> Result<()> {
-        let Geometry { width, height, .. } = self.geometry;
+        let Arrangement { width, height, .. } = self.geometry.arrangement;
         for select in self.geometry.select.clone() {
             for column in 0..width {
                 for row in height..MAX_ROWS {
@@ -243,17 +255,27 @@ mod tests {
     use crate::scene::FrameBuffer;
     use crate::tests::parse_args;
 
-    fn args(extra: &[&str]) -> DisplayArgs {
-        parse_args(extra)
+    /// Two 28x14 panels side by side.
+    const TWO: Arrangement = Arrangement {
+        panels: 2,
+        width: 28,
+        height: 14,
+        layout: Layout::Row,
+    };
+    /// Panels as high as the board can address: no rows below the display.
+    const FULL_HEIGHT: Arrangement = Arrangement { height: 16, ..TWO };
+
+    fn try_geometry(arrangement: Arrangement, extra: &[&str]) -> Result<Geometry> {
+        Geometry::new(arrangement, &parse_args(extra))
     }
 
-    fn geometry(extra: &[&str]) -> Geometry {
-        Geometry::new(&args(extra)).unwrap()
+    fn geometry(arrangement: Arrangement, extra: &[&str]) -> Geometry {
+        try_geometry(arrangement, extra).unwrap()
     }
 
     /// A panel on fake pins, with what it writes at its start left in the log.
-    fn panel(extra: &[&str]) -> (Panel<FakePins>, Log) {
-        let args = args(extra);
+    fn panel(arrangement: Arrangement, extra: &[&str]) -> (Panel<FakePins>, Log) {
+        let args: PanelArgs = parse_args(extra);
         let log = Log::default();
         let pins = FakePins {
             log: log.clone(),
@@ -261,7 +283,8 @@ mod tests {
         };
         let board = Board::new(pins, PULSE).unwrap();
         log.borrow_mut().clear();
-        let panel = Panel::new(board, Geometry::new(&args).unwrap(), args.panel.invert).unwrap();
+        let geometry = Geometry::new(arrangement, &args).unwrap();
+        let panel = Panel::new(board, geometry, args.invert).unwrap();
         (panel, log)
     }
 
@@ -272,6 +295,16 @@ mod tests {
             .filter(|(name, high)| name.starts_with("COL-SEL") && *high)
             .map(|(name, _)| name)
             .collect()
+    }
+
+    #[test]
+    fn display_size_follows_panels_and_layout() {
+        assert_eq!(TWO.display_size(), (56, 14));
+        let column = Arrangement {
+            layout: Layout::Column,
+            ..TWO
+        };
+        assert_eq!(column.display_size(), (28, 28));
     }
 
     #[test]
@@ -289,7 +322,7 @@ mod tests {
 
     #[test]
     fn panels_in_a_row_share_the_rows() {
-        let g = geometry(&[]);
+        let g = geometry(TWO, &[]);
         let place = |x, y| g.place(x, y).unwrap();
         assert_eq!(
             place(0, 0),
@@ -322,7 +355,11 @@ mod tests {
 
     #[test]
     fn panels_in_a_column_share_the_columns() {
-        let g = geometry(&["--layout", "column"]);
+        let column = Arrangement {
+            layout: Layout::Column,
+            ..TWO
+        };
+        let g = geometry(column, &[]);
         let place = |x, y| g.place(x, y).unwrap();
         assert_eq!(place(3, 13).select, 0);
         assert_eq!(
@@ -338,7 +375,7 @@ mod tests {
 
     #[test]
     fn mirroring_turns_the_whole_display_round() {
-        let g = geometry(&["--mirror-x", "--mirror-y"]);
+        let g = geometry(TWO, &["--mirror-x", "--mirror-y"]);
         assert_eq!(
             g.place(0, 0).unwrap(),
             Place {
@@ -347,33 +384,39 @@ mod tests {
                 column: 31
             }
         );
-        assert_eq!(geometry(&["--mirror-x"]).place(0, 0).unwrap().row, 1);
+        assert_eq!(geometry(TWO, &["--mirror-x"]).place(0, 0).unwrap().row, 1);
     }
 
     #[test]
     fn select_lines_can_be_assigned() {
-        let g = geometry(&["--select", "3,0"]);
+        let g = geometry(TWO, &["--select", "3,0"]);
         assert_eq!(g.place(0, 0).unwrap().select, 3);
         assert_eq!(g.place(28, 0).unwrap().select, 0);
-        assert!(
-            Geometry::new(&args(&["--select", "1"])).is_err(),
-            "two panels"
-        );
+        assert!(try_geometry(TWO, &["--select", "1"]).is_err(), "two panels");
     }
 
     #[test]
     fn displays_the_board_cannot_address_are_refused() {
-        assert!(Geometry::new(&args(&["--panels", "5"])).is_ok());
-        assert!(Geometry::new(&args(&["--panels", "6"])).is_err());
-        assert!(Geometry::new(&args(&["--width", "29"])).is_err());
-        assert!(Geometry::new(&args(&["--height", "16"])).is_ok());
-        assert!(Geometry::new(&args(&["--height", "17"])).is_err());
+        let with = |panels, width, height| {
+            let arrangement = Arrangement {
+                panels,
+                width,
+                height,
+                ..TWO
+            };
+            try_geometry(arrangement, &[])
+        };
+        assert!(with(5, 28, 14).is_ok());
+        assert!(with(6, 28, 14).is_err());
+        assert!(with(2, 29, 14).is_err());
+        assert!(with(2, 28, 16).is_ok());
+        assert!(with(2, 28, 17).is_err());
     }
 
     #[test]
     fn rows_below_the_display_are_turned_off_at_the_start() {
         // Rows 15 and 16 of two 28 column panels.
-        let (panel, log) = panel(&[]);
+        let (panel, log) = panel(TWO, &[]);
         assert_eq!(pulses(&log).len(), 2 * 28 * 2);
         let written = named(&log);
         assert!(written.contains(&("ROW-HIGH", true)), "turned off");
@@ -381,7 +424,7 @@ mod tests {
         assert_eq!(written.last(), Some(&("ROW-HIGH", false)), "rows at rest");
         drop(panel);
 
-        let (_panel, log) = self::panel(&["--height", "16"]);
+        let (_panel, log) = self::panel(FULL_HEIGHT, &[]);
         assert!(
             pulses(&log).is_empty(),
             "nothing below a full height display"
@@ -390,7 +433,7 @@ mod tests {
 
     #[test]
     fn a_frame_pulses_once_per_dot_that_differs() {
-        let (panel, log) = panel(&["--height", "16"]);
+        let (panel, log) = panel(FULL_HEIGHT, &[]);
         let mut display = Display::new(56, 16);
         display.attach(panel);
 
@@ -417,11 +460,11 @@ mod tests {
             y: 0,
             on: true,
         };
-        let (mut plain, log) = panel(&["--height", "16"]);
+        let (mut plain, log) = panel(FULL_HEIGHT, &[]);
         plain.flip(flip).unwrap();
         assert!(named(&log).contains(&("ROW-LOW", true)));
 
-        let (mut inverted, log) = panel(&["--height", "16", "--invert"]);
+        let (mut inverted, log) = panel(FULL_HEIGHT, &["--invert"]);
         inverted.flip(flip).unwrap();
         assert!(named(&log).contains(&("ROW-HIGH", true)));
     }

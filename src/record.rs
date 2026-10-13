@@ -183,7 +183,7 @@ mod tests {
     /// recording is exactly what went in.
     #[tokio::test]
     async fn recording_a_replay_reproduces_the_frames() {
-        use crate::live::tests::{IDENT, POS_EVEN, POS_ODD, VELOCITY};
+        use crate::tracker::tests::{IDENT, POS_EVEN, POS_ODD, VELOCITY};
 
         let original: String = [IDENT, VELOCITY, POS_ODD, POS_EVEN, "5d4ca4ab3b2f5c"]
             .iter()

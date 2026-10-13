@@ -12,8 +12,8 @@ use ratatui::Frame;
 use rs1090::decode::TimedMessage;
 
 use crate::aircraft_db::{AircraftInfo, DbArgs, Lookup};
-use crate::live::Table;
 use crate::source::SourceArgs;
+use crate::tracker::Tracker;
 use crate::tui::{self, Column, View, age_style, opt};
 
 /// Mean Earth radius in kilometres.
@@ -235,7 +235,7 @@ pub struct Filter {
     max_altitude_ft: i64,
     expire: Duration,
     /// Tracks every aircraft in range and resolves positions.
-    tracker: Table,
+    tracker: Tracker,
     passes: BTreeMap<u32, Pass>,
     /// Time of the last position handled per aircraft, to spot new ones.
     handled: BTreeMap<u32, f64>,
@@ -252,7 +252,7 @@ impl Filter {
             area,
             max_altitude_ft,
             expire,
-            tracker: Table::new(TRACKER_EXPIRE),
+            tracker: Tracker::new(TRACKER_EXPIRE),
             passes: BTreeMap::new(),
             handled: BTreeMap::new(),
             total_passes: 0,
@@ -279,7 +279,7 @@ impl Filter {
         passes
             .into_iter()
             .map(|(icao, pass)| {
-                let aircraft = self.tracker.rows.get(icao);
+                let aircraft = self.tracker.aircraft.get(icao);
                 Flight {
                     icao: *icao,
                     callsign: aircraft.and_then(|a| a.callsign.clone()),
@@ -383,7 +383,7 @@ impl View for Filter {
         let Some(icao) = self.tracker.update(msg, now) else {
             return false;
         };
-        let aircraft = &self.tracker.rows[&icao];
+        let aircraft = &self.tracker.aircraft[&icao];
         let (Some(lat), Some(lon), Some(time)) = (
             aircraft.latitude,
             aircraft.longitude,
@@ -406,7 +406,7 @@ impl View for Filter {
         self.tracker.expire(now);
         let tracker = &self.tracker;
         self.handled
-            .retain(|icao, _| tracker.rows.contains_key(icao));
+            .retain(|icao, _| tracker.aircraft.contains_key(icao));
 
         let before = self.passes.len();
         let expire = self.expire;
@@ -432,7 +432,7 @@ impl View for Filter {
             .passes
             .iter()
             .map(|(icao, pass)| {
-                let aircraft = self.tracker.rows.get(icao);
+                let aircraft = self.tracker.aircraft.get(icao);
                 let info = self.lookup.get(*icao).unwrap_or_default();
                 let age = now.duration_since(pass.last_fix);
                 let cells = vec![
@@ -479,9 +479,9 @@ pub async fn run(args: FilterArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live::tests::{IDENT, POS_EVEN, POS_ODD};
     use crate::source::tests::timed;
     use crate::tests::try_parse_args;
+    use crate::tracker::tests::{IDENT, POS_EVEN, POS_ODD};
     use crate::tui::tests::screen;
 
     /// The default point of interest.
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn flights_carry_what_the_aircraft_broadcasts() {
-        use crate::live::Aircraft;
+        use crate::tracker::Aircraft;
 
         let mut f = filter();
         let (lat, lon) = offset(3.0, 0.0);
@@ -809,7 +809,7 @@ mod tests {
         );
         assert!((bare.distance_km - 3.0).abs() < 0.01);
 
-        f.tracker.rows.insert(
+        f.tracker.aircraft.insert(
             0x405f12,
             Aircraft {
                 callsign: Some("EZY32GY".to_string()),
@@ -909,7 +909,7 @@ mod tests {
     #[test]
     fn draw_lists_passing_aircraft_with_track() {
         use crate::aircraft_db::tests::sample_db;
-        use crate::live::Aircraft;
+        use crate::tracker::Aircraft;
 
         let mut f = filter().with_lookup(Lookup::ready(sample_db()));
         let start = Instant::now();
@@ -928,7 +928,7 @@ mod tests {
             );
         }
         // What the aircraft broadcast about itself.
-        f.tracker.rows.insert(
+        f.tracker.aircraft.insert(
             0x3c0ac5,
             Aircraft {
                 callsign: Some("CFG5YW".to_string()),

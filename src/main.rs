@@ -15,6 +15,7 @@ mod scene;
 mod shutdown;
 mod source;
 mod template;
+mod tracker;
 mod tui;
 
 use std::process::ExitCode;
