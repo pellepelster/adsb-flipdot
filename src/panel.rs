@@ -86,7 +86,7 @@ impl Geometry {
     /// Fail if the board or the panels cannot address this display.
     fn new(args: &DisplayArgs) -> Result<Self> {
         let panels = args.panels as usize;
-        if args.width > u32::from(MAX_COLUMNS) || args.height > u32::from(MAX_ROWS) {
+        if args.width > MAX_COLUMNS || args.height > MAX_ROWS {
             bail!(
                 "a panel is addressed with at most {MAX_COLUMNS} columns and {MAX_ROWS} rows, \
                  not {}x{}",
@@ -200,7 +200,7 @@ impl<P: Pins> Panel<P> {
         let Geometry { width, height, .. } = self.geometry;
         for select in self.geometry.select.clone() {
             for column in 0..width {
-                for row in height..u32::from(MAX_ROWS) {
+                for row in height..MAX_ROWS {
                     self.board
                         .flip(select, address(row), address(column), self.invert)?;
                 }

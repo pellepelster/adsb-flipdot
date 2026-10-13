@@ -16,12 +16,14 @@ use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use tokio::signal::unix::{SignalKind, signal};
 
+use crate::board::MAX_COLUMNS;
 use crate::display::{Display, Note, Stacking, Terminal};
 use crate::panel::{Panel, PanelArgs};
 use crate::scene::{Align, Font, Scene, Scroll};
 
-/// Size of one real panel in dots.
-pub const PANEL_WIDTH: u32 = 28;
+/// Size of one real panel in dots: as wide as the board can address, two
+/// rows short of it.
+pub const PANEL_WIDTH: u32 = MAX_COLUMNS;
 pub const PANEL_HEIGHT: u32 = 14;
 /// Number of panels the display is built from.
 pub const PANELS: u32 = 2;

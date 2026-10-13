@@ -112,9 +112,9 @@ pub(crate) const COL_HIGH_LOW: usize = 12;
 const COL_SELECT: Range<usize> = 13..18;
 
 /// Rows a panel can have at most.
-pub(crate) const MAX_ROWS: u8 = 16;
+pub(crate) const MAX_ROWS: u32 = 16;
 /// Columns a panel can have at most: four decoder chips of seven lines.
-pub(crate) const MAX_COLUMNS: u8 = 28;
+pub(crate) const MAX_COLUMNS: u32 = 28;
 /// Panels the board can select.
 pub(crate) const MAX_PANELS: usize = COL_SELECT.end - COL_SELECT.start;
 /// Rest between two pulses.

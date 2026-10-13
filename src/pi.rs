@@ -18,8 +18,8 @@ use ratatui::widgets::{Cell, Row, Table};
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::board::{
-    Board, COL_ADDRESS, GpioPins, MAX_ROWS, NoPins, OVERRUN_FACTOR, Pins, ROW_ADDRESS, SIGNALS,
-    enable_realtime, line_number, micros,
+    Board, COL_ADDRESS, GpioPins, MAX_COLUMNS, MAX_ROWS, NoPins, OVERRUN_FACTOR, Pins, ROW_ADDRESS,
+    SIGNALS, enable_realtime, line_number, micros,
 };
 use crate::tui::TerminalGuard;
 
@@ -39,8 +39,8 @@ pub struct PiArgs {
     pub dry_run: bool,
 }
 
-fn describe_address(what: &str, address: u8, max: u8) -> String {
-    match line_number(address).filter(|line| *line <= max) {
+fn describe_address(what: &str, address: u8, max: u32) -> String {
+    match line_number(address).filter(|line| u32::from(*line) <= max) {
         Some(line) => format!("{what} address {address} = {what} {line}"),
         None => format!("{what} address {address} = no {what}"),
     }
@@ -139,7 +139,7 @@ fn draw<P: Pins>(frame: &mut Frame, board: &Board<P>, selected: usize, status: &
         Line::from(format!(
             "{} | {} | {}",
             describe_address("row", board.address(ROW_ADDRESS), MAX_ROWS),
-            describe_address("column", board.address(COL_ADDRESS), u8::MAX),
+            describe_address("column", board.address(COL_ADDRESS), MAX_COLUMNS),
             board.direction(),
         )),
         lines_area,
@@ -242,7 +242,7 @@ mod tests {
             "row address 19 = no row"
         );
         assert_eq!(
-            describe_address("column", 31, u8::MAX),
+            describe_address("column", 31, MAX_COLUMNS),
             "column address 31 = column 28"
         );
     }
