@@ -3,13 +3,13 @@
 # Works on Debian/Ubuntu laptops and Raspberry Pi OS. Needs sudo.
 set -eu
 
-here="$(cd "$(dirname "$0")" && pwd)"
+files="$(cd "$(dirname "$0")/../ansible/roles/rtlsdr_udev/files" && pwd)"
 
 echo "Installing udev rule -> /etc/udev/rules.d/99-rtlsdr.rules"
-sudo install -m 0644 "$here/99-rtlsdr.rules" /etc/udev/rules.d/99-rtlsdr.rules
+sudo install -m 0644 "$files/99-rtlsdr.rules" /etc/udev/rules.d/99-rtlsdr.rules
 
 echo "Installing modprobe blacklist -> /etc/modprobe.d/blacklist-rtlsdr.conf"
-sudo install -m 0644 "$here/blacklist-rtlsdr.conf" /etc/modprobe.d/blacklist-rtlsdr.conf
+sudo install -m 0644 "$files/blacklist-rtlsdr.conf" /etc/modprobe.d/blacklist-rtlsdr.conf
 
 echo "Unloading kernel DVB modules (if loaded)"
 for m in rtl2832_sdr dvb_usb_rtl28xxu rtl2832 rtl2830; do

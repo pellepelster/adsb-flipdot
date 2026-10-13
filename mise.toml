@@ -70,6 +70,11 @@ run = [
 description = "Install udev rule + DVB blacklist for the RTL2832U dongle (needs sudo)"
 run = "./deploy/setup-udev.sh"
 
+[tasks.ansible]
+description = "Set up a Raspberry Pi over SSH (udev rule + DVB blacklist), e.g. `mise ansible 10.42.0.112`"
+usage = 'arg "<target>" help="IP or hostname of the Pi, needs SSH access and sudo"'
+run = 'ansible-playbook -i "${usage_target?}," ansible/playbook.yml'
+
 [tasks.clean]
 description = "Remove build artifacts"
 run = "cargo clean"

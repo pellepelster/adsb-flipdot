@@ -1,0 +1,19 @@
+# Lets non-root users open the RTL2832U dongle and keeps the kernel DVB-T
+# driver from claiming it.
+- name: Install udev rule for the RTL2832U dongle
+  ansible.builtin.copy:
+    src: 99-rtlsdr.rules
+    dest: /etc/udev/rules.d/99-rtlsdr.rules
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload udev rules
+
+- name: Blacklist the kernel DVB-T modules
+  ansible.builtin.copy:
+    src: blacklist-rtlsdr.conf
+    dest: /etc/modprobe.d/blacklist-rtlsdr.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Unload kernel DVB modules
