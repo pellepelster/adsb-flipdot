@@ -11,8 +11,8 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use commands::{dump, flipdot, live, pi, record, run};
-use domain::{filter, template};
+use commands::{dump, filter, flipdot, live, pi, record, run};
+use domain::template;
 
 #[derive(Parser, Debug)]
 #[command(name = "adsb-flipdot", version, about)]

@@ -316,6 +316,9 @@ pub(crate) mod tests {
             track_deg: Some(153.2),
             groundspeed_kt: Some(151.0),
             distance_km: 1.5,
+            min_distance_km: 1.5,
+            fixes: 1,
+            last_fix: std::time::Instant::now(),
             info: AircraftInfo {
                 registration: Some("G-EZTB".to_string()),
                 typecode: Some("A320".to_string()),
@@ -333,6 +336,9 @@ pub(crate) mod tests {
             track_deg: None,
             groundspeed_kt: None,
             distance_km: 4.25,
+            min_distance_km: 4.25,
+            fixes: 1,
+            last_fix: std::time::Instant::now(),
             info: AircraftInfo::default(),
         }
     }

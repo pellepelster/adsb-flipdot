@@ -10,7 +10,6 @@ use anyhow::Result;
 
 use crate::commands::flipdot::DisplayArgs;
 use crate::commands::shutdown::Shutdown;
-use crate::commands::tui::View;
 use crate::domain::filter::{Filter, FilterParams, Flight, format_track};
 use crate::domain::presenter::Presenter;
 use crate::domain::template::{Template, default_templates};

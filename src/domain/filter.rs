@@ -2,34 +2,22 @@
 //! point and below an altitude limit.
 //!
 //! Used by `debug filter`, which lists them in a table, and by `run`, which
-//! shows them on the flipdot display.
+//! shows them on the flipdot display. Pure state: it is fed frames and asked
+//! for the flights.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
-use ratatui::Frame;
 use rs1090::decode::TimedMessage;
 
 use crate::cli::parse;
-use crate::commands::tui::{self, Column, View, age_style, opt};
 use crate::domain::tracker::Tracker;
 use crate::source::aircraft_db::{AircraftInfo, DbArgs, Lookup};
-use crate::source::stream::SourceArgs;
 
 /// Mean Earth radius in kilometres.
 const EARTH_RADIUS_KM: f64 = 6371.0088;
 /// How long the underlying aircraft tracker keeps a silent aircraft.
 const TRACKER_EXPIRE: Duration = Duration::from_secs(60);
-
-#[derive(clap::Args, Debug)]
-pub struct FilterArgs {
-    #[command(flatten)]
-    pub source: SourceArgs,
-
-    #[command(flatten)]
-    pub params: FilterParams,
-}
 
 /// Which aircraft to select. Shared by `debug filter` and `run`.
 #[derive(clap::Args, Debug)]
@@ -194,7 +182,14 @@ pub struct Flight {
     pub altitude_ft: Option<i64>,
     pub track_deg: Option<f64>,
     pub groundspeed_kt: Option<f64>,
+    /// Distance from the point at the latest position.
     pub distance_km: f64,
+    /// Closest approach to the point so far.
+    pub min_distance_km: f64,
+    /// Number of positions received inside the rectangle.
+    pub fixes: u64,
+    /// When the latest position arrived.
+    pub last_fix: Instant,
     /// Registration and type from the aircraft database, if known.
     pub info: AircraftInfo,
 }
@@ -258,6 +253,9 @@ impl Filter {
                     track_deg: aircraft.and_then(|a| a.track_deg),
                     groundspeed_kt: aircraft.and_then(|a| a.groundspeed_kt),
                     distance_km: pass.distance_km,
+                    min_distance_km: pass.min_distance_km,
+                    fixes: pass.fixes,
+                    last_fix: pass.last_fix,
                     info: self.lookup.get(*icao).unwrap_or_default(),
                 }
             })
@@ -333,24 +331,23 @@ impl Filter {
         pass.last_fix = now;
         true
     }
-}
 
-const COLUMNS: [Column; 11] = [
-    ("ICAO", 6, false),
-    ("CALLSIGN", 8, false),
-    ("TYPE", 4, false),
-    ("REG", 7, false),
-    ("ALT ft", 7, true),
-    ("DIST km", 7, true),
-    ("MIN km", 6, true),
-    ("TRACK", 5, true),
-    ("GS kt", 6, true),
-    ("FIXES", 5, true),
-    ("AGE", 4, true),
-];
+    /// The point of interest, as latitude and longitude.
+    pub fn center(&self) -> (f64, f64) {
+        self.center
+    }
 
-impl View for Filter {
-    fn update(&mut self, msg: &TimedMessage, now: Instant) -> bool {
+    pub fn area(&self) -> &Area {
+        &self.area
+    }
+
+    /// How long an aircraft stays listed without a position report.
+    pub fn pass_timeout(&self) -> Duration {
+        self.expire
+    }
+
+    /// Merge one frame. Returns true if the listing changed.
+    pub fn update(&mut self, msg: &TimedMessage, now: Instant) -> bool {
         let Some(icao) = self.tracker.update(msg, now) else {
             return false;
         };
@@ -373,7 +370,8 @@ impl View for Filter {
         self.add_position(icao, Fix { time, lat, lon }, altitude, now)
     }
 
-    fn expire(&mut self, now: Instant) -> bool {
+    /// Drop aircraft that went silent. Returns true if the listing changed.
+    pub fn expire(&mut self, now: Instant) -> bool {
         self.tracker.expire(now);
         let tracker = &self.tracker;
         self.handled
@@ -386,55 +384,8 @@ impl View for Filter {
         self.passes.len() != before
     }
 
-    fn draw(&self, frame: &mut Frame, scroll: &mut usize, status: &str, now: Instant) {
-        let header = format!(
-            "adsb-flipdot filter | {status} | {:.4},{:.4} {} rectangle @ {} <= {} ft | {} inside | {} passes | {} frames | {}",
-            self.center.0,
-            self.center.1,
-            self.dimensions(),
-            format_track(self.area.view_direction_deg),
-            self.max_altitude_ft,
-            self.passes.len(),
-            self.total_passes,
-            self.tracker.frames,
-            self.lookup.status(),
-        );
-        let rows = self
-            .passes
-            .iter()
-            .map(|(icao, pass)| {
-                let aircraft = self.tracker.aircraft.get(icao);
-                let info = self.lookup.get(*icao).unwrap_or_default();
-                let age = now.duration_since(pass.last_fix);
-                let cells = vec![
-                    format!("{icao:06x}"),
-                    opt(aircraft.and_then(|a| a.callsign.clone()), |v| v),
-                    info.typecode.unwrap_or_default(),
-                    info.registration.unwrap_or_default(),
-                    opt(aircraft.and_then(|a| a.altitude_ft), |v| v.to_string()),
-                    format!("{:.1}", pass.distance_km),
-                    format!("{:.1}", pass.min_distance_km),
-                    opt(aircraft.and_then(|a| a.track_deg), format_track),
-                    opt(aircraft.and_then(|a| a.groundspeed_kt), |v| {
-                        format!("{v:.0}")
-                    }),
-                    pass.fixes.to_string(),
-                    format!("{}s", age.as_secs()),
-                ];
-                (cells, age_style(age, self.expire))
-            })
-            .collect();
-        tui::draw_table(
-            frame,
-            scroll,
-            header,
-            &COLUMNS,
-            rows,
-            "no aircraft in the rectangle",
-        );
-    }
-
-    fn summary(&self) -> String {
+    /// What happened since start, in one line.
+    pub fn summary(&self) -> String {
         format!(
             "{} frames received, {} aircraft entered the rectangle",
             self.tracker.frames, self.total_passes
@@ -442,15 +393,9 @@ impl View for Filter {
     }
 }
 
-pub async fn run(args: FilterArgs) -> Result<()> {
-    let mut filter = args.params.build();
-    tui::run(&args.source, &mut filter).await
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::commands::tui::tests::screen;
     use crate::domain::tracker::tests::{IDENT, POS_EVEN, POS_ODD};
     use crate::source::stream::tests::timed;
     use crate::tests::try_parse_args;
@@ -831,8 +776,8 @@ mod tests {
             start + Duration::from_secs(20),
         );
 
-        assert!(!View::expire(&mut f, start + Duration::from_secs(30)));
-        assert!(View::expire(&mut f, start + Duration::from_secs(31)));
+        assert!(!f.expire(start + Duration::from_secs(30)));
+        assert!(f.expire(start + Duration::from_secs(31)));
         assert_eq!(f.passes.keys().copied().collect::<Vec<_>>(), [2]);
         assert_eq!(f.total_passes, 2, "the count of passes is kept");
 
@@ -857,33 +802,31 @@ mod tests {
         // 38000 ft. Centre the rectangle there and allow that altitude.
         let mut f = Filter::new((52.2572, 3.9194), square(0.0), 40000, SECS_30);
         let now = Instant::now();
-        assert!(
-            !View::update(&mut f, &timed(POS_ODD, 1.0), now),
-            "no position yet"
-        );
-        assert!(View::update(&mut f, &timed(POS_EVEN, 2.0), now));
+        assert!(!f.update(&timed(POS_ODD, 1.0), now), "no position yet");
+        assert!(f.update(&timed(POS_EVEN, 2.0), now));
         let pass = &f.passes[&0x40621d];
         assert_eq!(pass.fixes, 1);
         assert!(pass.distance_km < 0.1, "{}", pass.distance_km);
 
         // An unrelated aircraft without a position is not listed.
-        assert!(!View::update(&mut f, &timed(IDENT, 3.0), now));
+        assert!(!f.update(&timed(IDENT, 3.0), now));
         assert_eq!(f.passes.len(), 1);
 
         // Same aircraft, default altitude limit: 38000 ft is filtered out.
         let mut low = Filter::new((52.2572, 3.9194), square(0.0), 5000, SECS_30);
-        View::update(&mut low, &timed(POS_ODD, 1.0), now);
-        assert!(!View::update(&mut low, &timed(POS_EVEN, 2.0), now));
+        low.update(&timed(POS_ODD, 1.0), now);
+        assert!(!low.update(&timed(POS_EVEN, 2.0), now));
         assert!(low.passes.is_empty());
     }
 
-    #[test]
-    fn draw_lists_passing_aircraft_with_track() {
+    /// A filter that knows the aircraft database, with one aircraft that
+    /// flew south-west straight over the point and was last heard at
+    /// `start`.
+    pub(crate) fn overflown(start: Instant) -> Filter {
         use crate::domain::tracker::Aircraft;
         use crate::source::aircraft_db::tests::sample_db;
 
         let mut f = filter().with_lookup(Lookup::ready(sample_db()));
-        let start = Instant::now();
         // South-west bound, straight over the point.
         for (i, d) in [3.0, 2.0, 1.0, 0.0, -1.0].into_iter().enumerate() {
             let (lat, lon) = offset(d, d);
@@ -909,42 +852,7 @@ mod tests {
                 ..Aircraft::default()
             },
         );
-
-        let lines = screen(&f, &mut 0, start + Duration::from_secs(4), 150, 8);
-        assert!(
-            lines[0].contains("53.7271,9.9066 10 x 10 km rectangle @ 360° <= 5000 ft"),
-            "{}",
-            lines[0]
-        );
-        assert!(lines[0].contains("1 inside | 1 passes"), "{}", lines[0]);
-        assert!(
-            lines[1]
-                .starts_with("ICAO    CALLSIGN  TYPE  REG       ALT ft  DIST km  MIN km  TRACK"),
-            "{}",
-            lines[1]
-        );
-        let row = &lines[2];
-        assert!(
-            row.starts_with("3c0ac5  CFG5YW    A321  D-ATCA      1900"),
-            "{row}"
-        );
-        assert!(lines[0].ends_with("6 aircraft known"), "{}", lines[0]);
-        assert!(
-            row.contains("    1.4     0.0   225°     151      5"),
-            "{row}"
-        );
-        assert!(row.ends_with("  4s"), "{row}");
-    }
-
-    #[test]
-    fn draw_empty_filter_shows_placeholder() {
-        let lines = screen(&filter(), &mut 0, Instant::now(), 120, 8);
-        assert!(
-            lines
-                .iter()
-                .any(|l| l.contains("no aircraft in the rectangle")),
-            "{lines:#?}"
-        );
+        f
     }
 
     #[test]

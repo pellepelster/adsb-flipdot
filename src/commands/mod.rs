@@ -1,4 +1,5 @@
 pub mod dump;
+pub mod filter;
 pub mod flipdot;
 pub mod live;
 pub mod pi;
