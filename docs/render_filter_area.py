@@ -2,7 +2,7 @@
 """Draw docs/filter-area.svg: the point of interest as a house, the filter box
 around it and the runways of Hamburg Airport in the distance.
 
-The numbers mirror the defaults of FilterParams in src/filter.rs. Positions,
+The numbers mirror the defaults of FilterParams in src/cli/filter.rs. Positions,
 box and runway lengths are to scale; the house, the aircraft and the runway
 width are drawn larger so they can be seen.
 

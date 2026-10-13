@@ -1,3 +1,10 @@
+//! The commands: the loops that wire the layers together.
+//!
+//! A command gets its options from `cli`, opens a source and an output,
+//! and passes what the source delivers through the business code in
+//! `domain`. The full-screen terminal UI of the debug commands and the
+//! handling of signals live here too.
+
 pub mod dump;
 pub mod filter;
 pub mod flipdot;
