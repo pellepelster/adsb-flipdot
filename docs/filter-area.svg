@@ -44,5 +44,4 @@
 <line x1="254.8" y1="710.5" x2="174.1" y2="800.0" stroke="#1f2a36" stroke-width="2.5"/>
 <polygon points="148.0,828.9 190.0,802.6 158.3,797.3" fill="#1f2a36"/>
 <text x="135.9" y="848.3" font-size="18" text-anchor="middle" font-weight="bold" fill="#1f2a36" stroke="#ffffff" stroke-width="4.5" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">N</text>
-<text x="24.0" y="978.0" font-size="14" text-anchor="start" font-weight="normal" fill="#4a5764" stroke="#ffffff" stroke-width="3.5" stroke-opacity="0.85" stroke-linejoin="round" paint-order="stroke">House, aircraft and runway width are not to scale.</text>
 </svg>

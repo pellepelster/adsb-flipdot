@@ -302,7 +302,5 @@ polygon([add(north_to, (0.0, 0.35, 0.0)), add(north_to, (-0.14, 0.0, 0.0)), add(
 n = math.hypot(nx - bx, ny - by)
 text(nx + (nx - bx) / n * 18, ny + (ny - by) / n * 18 + 6, "N", size=18, anchor="middle", weight="bold")
 
-text(24, HEIGHT - 22, "House, aircraft and runway width are not to scale.", size=14, fill="#4a5764")
-
 out.append("</svg>")
 Path(__file__).with_name("filter-area.svg").write_text("\n".join(out) + "\n")
