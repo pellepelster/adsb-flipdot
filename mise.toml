@@ -6,6 +6,8 @@ rust = { version = "stable", components = "clippy,rustfmt,rust-analyzer" }
 "cargo:cargo-watch" = "latest"
 "cargo:cargo-nextest" = "latest"
 "cargo:cross" = "latest"
+python = "3.14"
+ansible = "14"
 
 [env]
 RUST_BACKTRACE = "1"
