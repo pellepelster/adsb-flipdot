@@ -32,6 +32,8 @@ style drivers on the same connector.
 
 ## Pinout
 
+![How the header pins pick and flip a dot](panel-overview.png)
+
 Seen from the mating side of the header on the panel. On our panels, ground
 on pins 1 and 2, 5 V on pin 3 and the coil supply on pin 26 are measured;
 pin 4 is not connected to 5 V and pin 25 not to the coil supply.
@@ -118,6 +120,8 @@ are not driven by the board.
 
 ## Addresses
 
+![How the row and column address pick one dot](../dot-selection.png)
+
 Rows and columns are counted from 1 here. The address on the five address
 lines is not the row or column number: both decoders skip codes.
 
@@ -164,6 +168,10 @@ panels. With the adapter board, which wires ROW1 to pin 7 and ROW2 to pin 6,
 use the straight table 1–7, 9–15, 17, 18.
 
 ## ROW-HIGH, ROW-LOW and COL-H/L
+
+![The current through one dot for each colour, and the order of the signals](../dot-flow.png)
+
+![How the coil flips the disc one way and back](../coil-mechanism.png)
 
 A coil has two ends. One end sits on the column line. The other end reaches
 the row through two diodes that point in opposite directions, so every row
