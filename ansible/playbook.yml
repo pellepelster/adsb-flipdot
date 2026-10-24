@@ -1,0 +1,6 @@
+# Sets up a Raspberry Pi to run adsb-flipdot: `mise ansible <target ip>`
+- name: Set up adsb-flipdot host
+  hosts: all
+  become: true
+  roles:
+    - rtlsdr_udev

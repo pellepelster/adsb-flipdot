@@ -1,0 +1,3 @@
+# RTL2832U based DVB-T / RTL-SDR dongles: allow non-root access for adsb-flipdot
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0666", TAG+="uaccess"
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0666", TAG+="uaccess"

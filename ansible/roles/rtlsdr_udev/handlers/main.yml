@@ -1,0 +1,9 @@
+- name: Reload udev rules
+  ansible.builtin.shell: udevadm control --reload-rules && udevadm trigger --subsystem-match=usb
+  changed_when: true
+
+# Fails while the dongle is in use; a replug or reboot applies the blacklist then.
+- name: Unload kernel DVB modules
+  ansible.builtin.command: modprobe -r -a rtl2832_sdr dvb_usb_rtl28xxu rtl2832 rtl2830
+  changed_when: true
+  failed_when: false

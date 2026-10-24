@@ -1,0 +1,8 @@
+Item #,Designator,Qty,Manufacturer,Mfg Part #,Description / Value,Package / Footprint,Type,Notes
+1,"U1,U2,U3",3,Texas Instruments,SN74HCT541N,Octal buffer 74HCT541,DIP-20,THT,Solder directly (no sockets)
+2,"C1,C2,C3",3,Vishay,K104K15X7RF53L2,100 nF 50 V X7R ceramic,Radial 2.5 mm pitch,THT,Any equivalent accepted
+3,C4,1,Panasonic,EEU-FR1V471,470 uF 35 V electrolytic,Radial 10 mm dia / 5 mm pitch,THT,Observe polarity; any equivalent accepted
+4,D1,1,onsemi,1N5819,Schottky diode 40 V 1 A,DO-41,THT,Cathode band to square pad
+5,J1,1,Samtec,SSW-120-01-T-D,2x20 female socket 2.54 mm,Through-hole vertical,THT,MOUNT ON BOTTOM SIDE; any equivalent with 8.5 mm body accepted
+6,J2,1,Wurth Elektronik,61202621621,2x13 shrouded box header 2.54 mm,Through-hole vertical,THT,Notch toward board edge as on silkscreen
+7,J3,1,CUI Devices,PJ-102A,DC barrel jack 5.5 x 2.1 mm,DC-005 style through-hole,THT,Check fit against footprint before purchase; equivalent DC-005 accepted

@@ -1,0 +1,167 @@
+# mise configuration for adsb-flipdot (Rust)
+# https://mise.jdx.dev
+
+[tools]
+rust = { version = "stable", components = "clippy,rustfmt,rust-analyzer" }
+"cargo:cargo-watch" = "latest"
+"cargo:cargo-nextest" = "latest"
+"cargo:cross" = "latest"
+python = "3.14"
+ansible = "14"
+
+[env]
+RUST_BACKTRACE = "1"
+RUST_LOG = "info"
+
+[settings]
+experimental = true
+
+[tasks.build]
+description = "Build the project (debug)"
+run = "cargo build"
+
+[tasks.release]
+description = "Build the project (release)"
+run = "cargo build --release"
+
+[tasks.run]
+description = "Run adsb-flipdot (release build), e.g. `mise run run debug dump`"
+run = "cargo run --release --"
+
+[tasks.test]
+description = "Run tests"
+run = "cargo nextest run"
+
+[tasks.fmt]
+description = "Format sources"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Run clippy with warnings as errors"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks.check]
+description = "Format check + clippy + tests"
+depends = ["fmt-check", "lint", "test"]
+
+[tasks."fmt:check"]
+description = "Verify formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks."build:pi"]
+description = "Cross-compile static release binaries for 64-bit and 32-bit Raspberry Pi (needs Docker)"
+depends = ["build:pi:64", "build:pi:32"]
+
+# Each target has its own target directory: the two cross images differ in
+# glibc and cannot run each other's build scripts.
+[tasks."build:pi:64"]
+description = "Cross-compile a static release binary for 64-bit Raspberry Pi (needs Docker)"
+run = [
+  "cross build --release --target aarch64-unknown-linux-musl --target-dir target/pi64",
+  "ls -lh target/pi64/aarch64-unknown-linux-musl/release/adsb-flipdot",
+]
+
+[tasks."build:pi:32"]
+description = "Cross-compile a static release binary for 32-bit Raspberry Pi, e.g. the Pi 2 (needs Docker)"
+run = [
+  "cross build --release --target armv7-unknown-linux-musleabihf --target-dir target/pi32",
+  "ls -lh target/pi32/armv7-unknown-linux-musleabihf/release/adsb-flipdot",
+]
+
+[tasks.setup-udev]
+description = "Install udev rule + DVB blacklist for the RTL2832U dongle (needs sudo)"
+run = "./deploy/setup-udev.sh"
+
+[tasks.ansible]
+description = "Set up a Raspberry Pi over SSH (udev rule + DVB blacklist), e.g. `mise ansible 10.42.0.112`"
+usage = 'arg "<target>" help="IP or hostname of the Pi, needs SSH access and sudo"'
+run = 'ansible-playbook -i "${usage_target?}," ansible/playbook.yml'
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "cargo clean"
+
+# --- PCB (pcb/): everything derived from pcb/build_board.py. Needs Docker. ---
+
+[vars]
+pcb_name = "flipdot-hat"
+pcb_dir = "{{config_root}}/pcb"
+kicad = "docker run --rm -v {{config_root}}/pcb:/w -w /w kicad/kicad:9.0"
+freerouting_version = "2.1.0"
+freerouting_jar = "{{config_root}}/pcb/.cache/freerouting-2.1.0.jar"
+
+[tasks."pcb:generate"]
+description = "Regenerate all generated PCB files (board, DRC, gerbers, assembly, renders)"
+run = [
+  { task = "pcb:board" },
+  { tasks = ["pcb:drc", "pcb:gerbers", "pcb:placement", "pcb:render"] },
+  { task = "pcb:zip" },
+]
+
+[tasks."pcb:freerouting"]
+description = "Download the Freerouting jar (skipped if FREEROUTING_JAR is set)"
+hide = true
+run = '''
+set -e
+[ -n "$FREEROUTING_JAR" ] && exit 0
+[ -f "{{vars.freerouting_jar}}" ] && exit 0
+mkdir -p "$(dirname "{{vars.freerouting_jar}}")"
+curl -fL -o "{{vars.freerouting_jar}}.part" \
+  https://github.com/freerouting/freerouting/releases/download/v{{vars.freerouting_version}}/freerouting-{{vars.freerouting_version}}.jar
+mv "{{vars.freerouting_jar}}.part" "{{vars.freerouting_jar}}"
+'''
+
+[tasks."pcb:board"]
+description = "Place, autoroute and pour the board (build_board.py -> .kicad_pcb)"
+depends = ["pcb:freerouting"]
+dir = "{{vars.pcb_dir}}"
+run = '''
+set -e
+JAR="${FREEROUTING_JAR:-{{vars.freerouting_jar}}}"
+{{vars.kicad}} python3 build_board.py prep
+rm -f {{vars.pcb_name}}.ses
+docker run --rm --network none --user $(id -u):$(id -g) -e HOME=/tmp -v "{{vars.pcb_dir}}":/w -v "$JAR":/t/freerouting.jar:ro -w /w \
+  eclipse-temurin:21-jre java -Djava.awt.headless=true -jar /t/freerouting.jar -de {{vars.pcb_name}}.dsn -do {{vars.pcb_name}}.ses -mp 30 -da --gui.enabled=false >/dev/null
+{{vars.kicad}} python3 build_board.py finish
+rm -f {{vars.pcb_name}}.dsn {{vars.pcb_name}}.ses
+'''
+
+[tasks."pcb:drc"]
+description = "Run DRC (-> pcb/drc.json)"
+run = "{{vars.kicad}} kicad-cli pcb drc --severity-all --format json -o drc.json {{vars.pcb_name}}.kicad_pcb"
+
+[tasks."pcb:gerbers"]
+description = "Export gerbers and drill files (-> pcb/gerbers/)"
+dir = "{{vars.pcb_dir}}"
+run = '''
+set -e
+rm -rf gerbers && mkdir -p gerbers
+{{vars.kicad}} kicad-cli pcb export gerbers --layers F.Cu,B.Cu,F.Mask,B.Mask,F.SilkS,B.SilkS,Edge.Cuts --subtract-soldermask -o gerbers/ {{vars.pcb_name}}.kicad_pcb
+{{vars.kicad}} kicad-cli pcb export drill --format excellon --excellon-units mm --excellon-separate-th -o gerbers/ {{vars.pcb_name}}.kicad_pcb
+'''
+
+[tasks."pcb:placement"]
+description = "Export the placement file (-> pcb/assembly/)"
+dir = "{{vars.pcb_dir}}"
+run = '''
+set -e
+mkdir -p assembly
+{{vars.kicad}} kicad-cli pcb export pos --format csv --units mm --side both -o assembly/{{vars.pcb_name}}-placement.csv {{vars.pcb_name}}.kicad_pcb
+'''
+
+[tasks."pcb:render"]
+description = "Render pcb/top.png and pcb/bottom.png"
+run = [
+  "{{vars.kicad}} kicad-cli pcb render --side top --width 1600 --height 1400 -o top.png {{vars.pcb_name}}.kicad_pcb",
+  "{{vars.kicad}} kicad-cli pcb render --side bottom --width 1600 --height 1400 -o bottom.png {{vars.pcb_name}}.kicad_pcb",
+]
+
+[tasks."pcb:zip"]
+description = "Pack pcb/gerbers/ and pcb/assembly/ into the upload zips"
+dir = "{{vars.pcb_dir}}"
+run = '''
+set -e
+rm -f {{vars.pcb_name}}-gerbers.zip {{vars.pcb_name}}-assembly.zip
+(cd gerbers && zip -q ../{{vars.pcb_name}}-gerbers.zip *)
+(cd assembly && zip -q ../{{vars.pcb_name}}-assembly.zip *)
+'''

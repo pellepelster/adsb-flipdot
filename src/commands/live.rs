@@ -1,0 +1,155 @@
+//! `live`: show aircraft passing the point of interest on the flipdot display.
+//!
+//! Frames go through the same [`Filter`] as `debug filter`. The
+//! [`Presenter`] decides which aircraft and which text is up. The display
+//! is simulated in the terminal and, with `--gpio`, shown on the panels.
+
+use std::time::Instant;
+
+use anyhow::Result;
+
+use crate::cli::LiveArgs;
+use crate::commands::shutdown::Shutdown;
+use crate::domain::filter::{Filter, Flight, format_track};
+use crate::domain::presenter::Presenter;
+use crate::domain::scene::Font;
+use crate::domain::template::templates;
+use crate::output::Note;
+use crate::output::terminal::Stacking;
+use crate::source::stream::FrameStream;
+
+/// The font of the display: 5 characters and 2 lines per panel.
+const FONT: Font = Font::F5x7;
+
+/// One line of plain text under the simulated display with the full details.
+fn status_line(filter: &Filter, flights: &[Flight], shown: Option<usize>) -> String {
+    match shown.and_then(|index| Some((index, flights.get(index)?))) {
+        Some((index, flight)) => {
+            let mut parts = vec![format!("{:06x}", flight.icao)];
+            parts.extend(flight.callsign.clone());
+            parts.extend(flight.info.registration.clone());
+            parts.extend(
+                flight
+                    .info
+                    .type_name
+                    .clone()
+                    .or(flight.info.typecode.clone()),
+            );
+            parts.extend(flight.altitude_ft.map(|v| format!("{v} ft")));
+            parts.extend(flight.track_deg.map(format_track));
+            parts.extend(flight.groundspeed_kt.map(|v| format!("{v:.0} kt")));
+            parts.push(format!("{:.1} km", flight.distance_km));
+            format!("{}  [{}/{}]", parts.join("  "), index + 1, flights.len())
+        }
+        None => format!(
+            "no aircraft in the {} rectangle at or below {} ft  ({} passes, {} frames, {})",
+            filter.dimensions(),
+            filter.max_altitude_ft(),
+            filter.total_passes(),
+            filter.frames(),
+            filter.db_status()
+        ),
+    }
+}
+
+pub async fn run(args: LiveArgs) -> Result<()> {
+    args.display.check(FONT)?;
+    // Before the panels are opened: from here on a signal cannot end the
+    // program in the middle of a pulse.
+    let mut shutdown = Shutdown::listen()?;
+    let mut presenter = Presenter::new(templates(), args.display.ticks(args.page_wait));
+    let typesetting = args.display.typesetting(FONT);
+    let mut filter = args.filter.build();
+    let mut stream = FrameStream::open(&args.source.source()).await?;
+    eprintln!("adsb-flipdot: {}", stream.description());
+
+    // The simulated display in the terminal, dots plus a status line, and
+    // with `--gpio` the panels. Opened last: the threads of the source must
+    // not inherit the real-time priority of the panels.
+    // Wiped first: whatever the panels kept from before is gone before the
+    // first aircraft shows up.
+    let mut display = match args
+        .display
+        .open(Stacking::InPlace, args.gpio)
+        .and_then(|mut display| display.wipe().map(|_| display))
+    {
+        Ok(display) => display,
+        Err(error) => {
+            let _ = stream.close().await;
+            return Err(error);
+        }
+    };
+    let mut tick = tokio::time::interval(args.display.frame_time());
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let mut first = true;
+    let mut failure = None;
+    loop {
+        tokio::select! {
+            _ = shutdown.recv() => break,
+            msg = stream.recv() => match msg {
+                Some(msg) => {
+                    filter.update(&msg, Instant::now());
+                }
+                None => break,
+            },
+            _ = tick.tick() => {
+                filter.expire(Instant::now());
+                let flights = filter.flights();
+                let changed = presenter.step(&flights, &typesetting) || first;
+                first = false;
+                let status = status_line(&filter, &flights, presenter.shown(&flights));
+                let note = Note {
+                    caption: Some(&status),
+                    new_text: changed,
+                };
+                if let Err(error) = display.show(&presenter.frame(&typesetting), note) {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Lowers every line of the panels.
+    drop(display);
+    let result = stream.close().await;
+    eprintln!("adsb-flipdot: {}", filter.summary());
+    failure.map_or(result, Err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::filter::Area;
+    use crate::domain::template::tests::{anonymous, easyjet};
+    use std::time::Duration;
+
+    #[test]
+    fn status_line_describes_the_shown_aircraft() {
+        let filter = Filter::new(
+            (53.7, 9.9),
+            Area {
+                width_km: 4.0,
+                length_km: 10.0,
+                offset_percent: 50.0,
+                view_direction_deg: 153.0,
+            },
+            5000,
+            Duration::from_secs(30),
+        );
+        let flights = [easyjet(), anonymous(0xabc123)];
+        assert_eq!(
+            status_line(&filter, &flights, Some(0)),
+            "405f12  EZY32GY  G-EZTB  AIRBUS A-320  1200 ft  153°  151 kt  1.5 km  [1/2]"
+        );
+        assert_eq!(
+            status_line(&filter, &flights, Some(1)),
+            "abc123  4.2 km  [2/2]"
+        );
+        assert_eq!(
+            status_line(&filter, &[], None),
+            "no aircraft in the 4 x 10 km rectangle at or below 5000 ft  (0 passes, 0 frames, aircraft db off)"
+        );
+    }
+}

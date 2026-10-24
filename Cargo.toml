@@ -1,0 +1,39 @@
+[package]
+name = "adsb-flipdot"
+version = "0.1.0"
+edition = "2024"
+description = "Receive ADS-B messages from an RTL2832U dongle and print them to the console"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+desperado = { version = "0.5", features = ["rtlsdr"] }
+rs1090 = { version = "0.7", default-features = false, features = ["rtlsdr"] }
+hex = "0.4"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+ratatui = "0.30.2"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+embedded-graphics = "0.8.2"
+ureq = "3.4.2"
+flate2 = "1.1.10"
+gpiocdev = "0.8.0"
+libc = "0.2.190"
+
+[dev-dependencies]
+# Lets tests run timers on a paused clock instead of waiting in real time.
+tokio = { version = "1", features = ["test-util"] }
+
+[lints.rust]
+# `cross` wraps the linker in a tracing shell script whose stderr is harmless.
+linker_messages = "allow"
+
+[lints.clippy]
+# A failed unwrap takes the display down. Tests are exempt, see clippy.toml.
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
